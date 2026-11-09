@@ -1,0 +1,72 @@
+{
+  "name": "@paperkit/anon",
+  "version": "0.1.0",
+  "description": "Double-blind anonymity audit for papers: identifier scanning, self-citation and repo-URL rules, PDF and image metadata read/strip.",
+  "keywords": [
+    "double-blind",
+    "anonymity",
+    "anonymization",
+    "peer-review",
+    "pdf",
+    "metadata",
+    "exif",
+    "xmp",
+    "submission",
+    "academic",
+    "research",
+    "paper",
+    "latex",
+    "scientific-writing",
+    "browser",
+    "offline",
+    "paperkit"
+  ],
+  "homepage": "https://github.com/kevnantony/paperkit-engines/tree/main/packages/anon",
+  "bugs": {
+    "url": "https://github.com/kevnantony/paperkit-engines/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kevnantony/paperkit-engines.git",
+    "directory": "packages/anon"
+  },
+  "license": "MIT",
+  "author": "Kevin Antony",
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    },
+    "./package.json": "./package.json"
+  },
+  "sideEffects": false,
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run --root ../.. packages/anon"
+  },
+  "dependencies": {
+    "@paperkit/arxiv": "0.1.0",
+    "jszip": "3.10.1",
+    "pdf-lib": "1.17.1"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

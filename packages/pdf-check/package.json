@@ -1,0 +1,74 @@
+{
+  "name": "@paperkit/pdf-check",
+  "version": "0.1.0",
+  "description": "Camera-ready PDF submission checks: fonts embedded, Type 3, PDF version, page size, page count, encryption, active content, margins.",
+  "keywords": [
+    "pdf",
+    "pdf-checker",
+    "pdf-lib",
+    "fonts",
+    "camera-ready",
+    "ieee",
+    "acm",
+    "lncs",
+    "submission",
+    "preflight",
+    "academic",
+    "research",
+    "paper",
+    "latex",
+    "scientific-writing",
+    "browser",
+    "offline",
+    "paperkit"
+  ],
+  "homepage": "https://github.com/kevnantony/paperkit-engines/tree/main/packages/pdf-check",
+  "bugs": {
+    "url": "https://github.com/kevnantony/paperkit-engines/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kevnantony/paperkit-engines.git",
+    "directory": "packages/pdf-check"
+  },
+  "license": "MIT",
+  "author": "Kevin Antony",
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    },
+    "./package.json": "./package.json"
+  },
+  "sideEffects": false,
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run --root ../.. packages/pdf-check"
+  },
+  "dependencies": {
+    "pdf-lib": "1.17.1"
+  },
+  "devDependencies": {
+    "pdfjs-dist": "5.4.149"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

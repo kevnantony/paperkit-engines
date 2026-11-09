@@ -1,0 +1,34 @@
+\documentclass{article}
+\usepackage{amsmath}
+\newcommand{\method}{FooNet}
+\title{A Tiny Paper About Counting}
+\author{Ann Author \and Bob Builder}
+\begin{document}
+\maketitle
+\begin{abstract}
+We count words in \LaTeX{} sources. Math such as $x^2 + y^2$ is skipped.
+\end{abstract}
+
+\section{Introduction}
+This is the \emph{first} section with five\footnote{A short note here.} words % this comment is ignored
+and a citation~\cite{knuth84} plus a reference to Table~\ref{tab:a}.
+\begin{equation}
+  E = mc^2 \text{ is not counted }
+\end{equation}
+
+\subsection{Background on \textbf{nested {braces}}}
+State-of-the-art results are \textbf{very {good}} indeed.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\linewidth]{fig.pdf}
+  Stray text in a float is ignored.
+  \caption{A caption with $\alpha$ math and three words.}
+  \label{fig:a}
+\end{figure}
+
+\section*{Conclusion}
+Done \% really.
+\bibliographystyle{plain}
+\bibliography{refs}
+\end{document}

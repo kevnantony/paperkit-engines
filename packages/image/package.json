@@ -1,0 +1,65 @@
+{
+  "name": "@paperkit/image",
+  "version": "0.1.0",
+  "description": "Pure figure helpers: whitespace bounding boxes on RGBA pixel buffers, PDF crop-box math, and target-size quality search.",
+  "keywords": [
+    "image",
+    "figure",
+    "crop",
+    "pdfcrop",
+    "bounding-box",
+    "compression",
+    "whitespace",
+    "academic",
+    "research",
+    "paper",
+    "latex",
+    "scientific-writing",
+    "browser",
+    "offline",
+    "paperkit"
+  ],
+  "homepage": "https://github.com/kevnantony/paperkit-engines/tree/main/packages/image",
+  "bugs": {
+    "url": "https://github.com/kevnantony/paperkit-engines/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kevnantony/paperkit-engines.git",
+    "directory": "packages/image"
+  },
+  "license": "MIT",
+  "author": "Kevin Antony",
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    },
+    "./package.json": "./package.json"
+  },
+  "sideEffects": false,
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run --root ../.. packages/image"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

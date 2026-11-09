@@ -1,0 +1,72 @@
+{
+  "name": "@paperkit/latex",
+  "version": "0.1.0",
+  "description": "LaTeX word count (texcount-style), CSV/TSV/Markdown to LaTeX table conversion, and \\input/\\include project resolution.",
+  "keywords": [
+    "tex",
+    "word-count",
+    "texcount",
+    "table",
+    "csv-to-latex",
+    "booktabs",
+    "overleaf",
+    "academic",
+    "research",
+    "paper",
+    "latex",
+    "scientific-writing",
+    "browser",
+    "offline",
+    "paperkit"
+  ],
+  "homepage": "https://github.com/kevnantony/paperkit-engines/tree/main/packages/latex",
+  "bugs": {
+    "url": "https://github.com/kevnantony/paperkit-engines/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kevnantony/paperkit-engines.git",
+    "directory": "packages/latex"
+  },
+  "license": "MIT",
+  "author": "Kevin Antony",
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    },
+    "./package.json": "./package.json"
+  },
+  "sideEffects": false,
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run --root ../.. packages/latex"
+  },
+  "dependencies": {
+    "jszip": "3.10.1",
+    "papaparse": "5.5.3"
+  },
+  "devDependencies": {
+    "@types/papaparse": "5.3.16"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
