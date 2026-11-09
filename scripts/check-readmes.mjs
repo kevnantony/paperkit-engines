@@ -5,7 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-// Inside node_modules so bare imports (@paperkit/*, pdf-lib, jszip) resolve like a consumer's would.
+// Inside node_modules so bare imports (@paperkit-latex/*, pdf-lib, jszip) resolve like a consumer's would.
 const out = path.join(root, "node_modules", ".readme-examples");
 mkdirSync(out, { recursive: true });
 let failed = 0;

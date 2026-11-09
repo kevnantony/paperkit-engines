@@ -1,11 +1,11 @@
 // Imports every built package through its CJS entry (package "exports" → dist/index.cjs) and runs one function.
 const assert = require("node:assert/strict");
-const { parseBibtex, entriesOf, cleanBibtex } = require("@paperkit/bibtex");
-const { countLatex, toLatex } = require("@paperkit/latex");
-const { stripComments } = require("@paperkit/arxiv");
-const { scanSourceFile } = require("@paperkit/anon");
-const { classifyPageSize, checkFonts } = require("@paperkit/pdf-check");
-const { contentBBox } = require("@paperkit/image");
+const { parseBibtex, entriesOf, cleanBibtex } = require("@paperkit-latex/bibtex");
+const { countLatex, toLatex } = require("@paperkit-latex/latex");
+const { stripComments } = require("@paperkit-latex/arxiv");
+const { scanSourceFile } = require("@paperkit-latex/anon");
+const { classifyPageSize, checkFonts } = require("@paperkit-latex/pdf-check");
+const { contentBBox } = require("@paperkit-latex/image");
 
 assert.equal(entriesOf(parseBibtex("@article{a, title={X}, year=2020}")).length, 1);
 assert.match(cleanBibtex("@article{a, title={X}, year=2020}").output, /@article/);

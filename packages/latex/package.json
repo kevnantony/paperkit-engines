@@ -1,5 +1,5 @@
 {
-  "name": "@paperkit/latex",
+  "name": "@paperkit-latex/latex",
   "version": "0.1.0",
   "description": "LaTeX word count (texcount-style), CSV/TSV/Markdown to LaTeX table conversion, and \\input/\\include project resolution.",
   "keywords": [

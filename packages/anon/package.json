@@ -1,5 +1,5 @@
 {
-  "name": "@paperkit/anon",
+  "name": "@paperkit-latex/anon",
   "version": "0.1.0",
   "description": "Double-blind anonymity audit for papers: identifier scanning, self-citation and repo-URL rules, PDF and image metadata read/strip.",
   "keywords": [
@@ -62,7 +62,7 @@
     "test": "vitest run --root ../.. packages/anon"
   },
   "dependencies": {
-    "@paperkit/arxiv": "0.1.0",
+    "@paperkit-latex/arxiv": "0.1.0",
     "jszip": "3.10.1",
     "pdf-lib": "1.17.1"
   },

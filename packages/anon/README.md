@@ -1,4 +1,4 @@
-# @paperkit/anon
+# @paperkit-latex/anon
 
 Double-blind anonymity audit for paper submissions. Scans LaTeX sources and extracted PDF text for author names, emails, institutions, self-citations ("our previous work [3]"), GitHub/Hugging Face links, local paths and acknowledgements; reads and strips PDF metadata (Info dictionary and XMP) and image EXIF/XMP/PNG text. Runs in Node 18+ and browsers.
 
@@ -7,14 +7,14 @@ PDF *text extraction* is not bundled: pass the page strings you extracted (pdf.j
 ## Install
 
 ```sh
-npm install @paperkit/anon
+npm install @paperkit-latex/anon
 ```
 
 ## Usage
 
 ```js
 import { PDFDocument } from "pdf-lib";
-import { runAudit, readPdfMetadata, stripPdfMetadata } from "@paperkit/anon";
+import { runAudit, readPdfMetadata, stripPdfMetadata } from "@paperkit-latex/anon";
 
 // A PDF whose metadata gives the author away.
 const doc = await PDFDocument.create();
@@ -46,7 +46,7 @@ console.log((await readPdfMetadata(clean)).author); // null
 - **Image metadata:** `readImageMeta`, `readJpegMeta`, `readPngMeta`, `parseTiffAuthors`.
 - **Types:** `Finding`, `Severity`, `RuleId`, `severityOrder`.
 
-LaTeX comment handling comes from [`@paperkit/arxiv`](https://github.com/kevnantony/paperkit-engines/tree/main/packages/arxiv).
+LaTeX comment handling comes from [`@paperkit-latex/arxiv`](https://github.com/kevnantony/paperkit-engines/tree/main/packages/arxiv).
 
 ## Part of PaperKit
 

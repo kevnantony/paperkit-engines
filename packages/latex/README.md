@@ -1,17 +1,17 @@
-# @paperkit/latex
+# @paperkit-latex/latex
 
 LaTeX utilities from PaperKit: a texcount-style word counter (text, headers, captions, footnotes, per section), CSV/TSV/Markdown to LaTeX table conversion (booktabs, siunitx, best-value bolding), and `\\input`/`\\include` resolution for multi-file projects and Overleaf zips. Runs in Node 18+ and browsers.
 
 ## Install
 
 ```sh
-npm install @paperkit/latex
+npm install @paperkit-latex/latex
 ```
 
 ## Usage
 
 ```js
-import { countLatex, toLatex, parseTable } from "@paperkit/latex";
+import { countLatex, toLatex, parseTable } from "@paperkit-latex/latex";
 
 const tex = String.raw`\section{Introduction}
 We study tables. % a comment is not counted

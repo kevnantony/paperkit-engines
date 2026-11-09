@@ -1,18 +1,18 @@
-# @paperkit/pdf-check
+# @paperkit-latex/pdf-check
 
 Camera-ready PDF checks from PaperKit: all fonts embedded, no Type 3 fonts, PDF version, page size (Letter/A4, per venue), page limit, encryption, JavaScript/attachments/file links, metadata, and text-to-edge margins. Structure is read with [pdf-lib](https://pdf-lib.js.org); the checks are pure functions over a JSON-serialisable `PdfFacts` object. Runs in Node 18+ and browsers.
 
 ## Install
 
 ```sh
-npm install @paperkit/pdf-check
+npm install @paperkit-latex/pdf-check
 ```
 
 ## Usage
 
 ```js
 import { PDFDocument, StandardFonts } from "pdf-lib";
-import { extractPdfFacts, runChecks, optionsForVenue, summarize } from "@paperkit/pdf-check";
+import { extractPdfFacts, runChecks, optionsForVenue, summarize } from "@paperkit-latex/pdf-check";
 
 // Any PDF bytes work; here we make an A4 page with a non-embedded standard font.
 const doc = await PDFDocument.create();
@@ -37,7 +37,7 @@ Margins need text positions. This package does not bundle pdf.js; load the docum
 
 ```ts
 import * as pdfjs from "pdfjs-dist/legacy/build/pdf.mjs";
-import { extractPdfFacts, extractTextBounds } from "@paperkit/pdf-check";
+import { extractPdfFacts, extractTextBounds } from "@paperkit-latex/pdf-check";
 
 const facts = await extractPdfFacts(bytes, {
   extractText: async (b) => {

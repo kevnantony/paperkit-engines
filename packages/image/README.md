@@ -1,17 +1,17 @@
-# @paperkit/image
+# @paperkit-latex/image
 
 Pure figure helpers from PaperKit, with no canvas and no dependencies: find the content bounding box of an RGBA pixel buffer (whitespace cropping), map pixel boxes to PDF MediaBox/CropBox rectangles (pdfcrop-style, rotation-aware), and binary-search an encoder quality that hits a target file size. Bring your own decoder/encoder (canvas, OffscreenCanvas, sharp, ...). Runs in Node 18+ and browsers.
 
 ## Install
 
 ```sh
-npm install @paperkit/image
+npm install @paperkit-latex/image
 ```
 
 ## Usage
 
 ```js
-import { contentBBox, padBBox, pixelBoxToPdfRect, searchQuality } from "@paperkit/image";
+import { contentBBox, padBBox, pixelBoxToPdfRect, searchQuality } from "@paperkit-latex/image";
 
 // 10×10 white image with a black 2×3 block at (4, 2). Works with canvas getImageData().data too.
 const width = 10, height = 10;

@@ -1,7 +1,7 @@
 /**
  * Detectors for de-anonymizing content in PDF text and LaTeX sources. Pure functions over strings.
  */
-import { blankComments, listComments } from "@paperkit/arxiv";
+import { blankComments, listComments } from "@paperkit-latex/arxiv";
 import { findAll, findIdentifier, lineOf, snippetAround, type TextMatch } from "./identifiers";
 import { LOCAL_PATH_RE, xmpAuthors, type PdfMetadata } from "./metadata";
 import type { Finding, Severity } from "./types";

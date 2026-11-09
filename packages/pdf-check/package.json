@@ -1,5 +1,5 @@
 {
-  "name": "@paperkit/pdf-check",
+  "name": "@paperkit-latex/pdf-check",
   "version": "0.1.0",
   "description": "Camera-ready PDF submission checks: fonts embedded, Type 3, PDF version, page size, page count, encryption, active content, margins.",
   "keywords": [

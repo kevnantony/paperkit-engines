@@ -1,11 +1,11 @@
 // Imports every built package through its ESM entry (package "exports" → dist/index.js) and runs one function.
 import assert from "node:assert/strict";
-import { parseBibtex, entriesOf, cleanBibtex } from "@paperkit/bibtex";
-import { countLatex, toLatex } from "@paperkit/latex";
-import { stripComments } from "@paperkit/arxiv";
-import { scanSourceFile } from "@paperkit/anon";
-import { classifyPageSize, checkFonts } from "@paperkit/pdf-check";
-import { contentBBox } from "@paperkit/image";
+import { parseBibtex, entriesOf, cleanBibtex } from "@paperkit-latex/bibtex";
+import { countLatex, toLatex } from "@paperkit-latex/latex";
+import { stripComments } from "@paperkit-latex/arxiv";
+import { scanSourceFile } from "@paperkit-latex/anon";
+import { classifyPageSize, checkFonts } from "@paperkit-latex/pdf-check";
+import { contentBBox } from "@paperkit-latex/image";
 
 assert.equal(entriesOf(parseBibtex("@article{a, title={X}, year=2020}")).length, 1);
 assert.match(cleanBibtex("@article{a, title={X}, year=2020}").output, /@article/);

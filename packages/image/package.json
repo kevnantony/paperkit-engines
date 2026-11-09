@@ -1,5 +1,5 @@
 {
-  "name": "@paperkit/image",
+  "name": "@paperkit-latex/image",
   "version": "0.1.0",
   "description": "Pure figure helpers: whitespace bounding boxes on RGBA pixel buffers, PDF crop-box math, and target-size quality search.",
   "keywords": [

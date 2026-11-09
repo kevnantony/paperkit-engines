@@ -1,17 +1,17 @@
-# @paperkit/bibtex
+# @paperkit-latex/bibtex
 
 A tolerant BibTeX parser and serializer, plus the cleaning, duplicate-detection and DOI/arXiv-to-BibTeX logic used by PaperKit. No dependencies, and no DOM: it runs in Node 18+ and in any modern browser.
 
 ## Install
 
 ```sh
-npm install @paperkit/bibtex
+npm install @paperkit-latex/bibtex
 ```
 
 ## Usage
 
 ```js
-import { parseBibtex, entriesOf, getField, cleanBibtex, findDuplicates, parseIdentifier } from "@paperkit/bibtex";
+import { parseBibtex, entriesOf, getField, cleanBibtex, findDuplicates, parseIdentifier } from "@paperkit-latex/bibtex";
 
 const src = `@article{vaswani2017,
   title = {Attention is All you Need},
@@ -37,7 +37,7 @@ console.log(parseIdentifier("https://arxiv.org/abs/1706.03762v7")); // { kind: "
 Network lookups never use a global: pass your own `fetch` (or a mock):
 
 ```ts
-import { parseInput, resolveAll, combine } from "@paperkit/bibtex";
+import { parseInput, resolveAll, combine } from "@paperkit-latex/bibtex";
 
 const results = await resolveAll(parseInput("10.1145/3065386\n1706.03762"), { fetch: (url, init) => fetch(url, init) });
 console.log(combine(results).output);

@@ -1,18 +1,18 @@
-# @paperkit/arxiv
+# @paperkit-latex/arxiv
 
 Prepare a LaTeX project for arXiv: strip comments without breaking `\\%`, `verbatim` or `\\url`, resolve the `\\input`/`\\includegraphics`/`\\bibliography` graph, plan which files to keep, and write a clean zip. Runs in Node 18+ and browsers (zip handling via jszip).
 
 ## Install
 
 ```sh
-npm install @paperkit/arxiv
+npm install @paperkit-latex/arxiv
 ```
 
 ## Usage
 
 ```js
 import JSZip from "jszip";
-import { stripComments, loadProjectZip, cleanProject } from "@paperkit/arxiv";
+import { stripComments, loadProjectZip, cleanProject } from "@paperkit-latex/arxiv";
 
 console.log(stripComments("50\\% done % TODO: ask Bob\n").text); // "50\% done %\n" (a bare % is kept so no line-end space is introduced)
 
