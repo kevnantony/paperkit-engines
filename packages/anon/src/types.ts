@@ -20,7 +20,10 @@ export type RuleId =
   | "institution"
   | "image-metadata"
   | "final-option"
-  | "comment-name";
+  | "comment-name"
+  | "annotation-author"
+  | "attachment"
+  | "local-link";
 
 export interface Finding {
   severity: Severity;

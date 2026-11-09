@@ -3,7 +3,7 @@
  * Pure: operates on a map of path → text plus the list of every path in the archive.
  */
 import { blankComments } from "./comments";
-import { dirname, extname, isAbsolutePath, join, normalizePath } from "./paths";
+import { basename, dirname, extname, isAbsolutePath, join, normalizePath } from "./paths";
 
 export type RefKind = "tex" | "graphics" | "bib" | "bst" | "cls" | "sty" | "file";
 
@@ -22,7 +22,7 @@ export interface Reference {
 export type WarningLevel = "danger" | "warning" | "info";
 export interface ProjectWarning {
   level: WarningLevel;
-  code: "missing-bbl" | "missing-file" | "absolute-path" | "case-mismatch" | "macro-path" | "no-main" | "multiple-main" | "biblatex" | "size";
+  code: "missing-bbl" | "missing-file" | "absolute-path" | "case-mismatch" | "macro-path" | "no-main" | "multiple-main" | "biblatex" | "size" | "unknown-kept";
   message: string;
   file?: string;
   line?: number;
@@ -119,6 +119,41 @@ export function extractCommands(src: string): RawCommand[] {
       args.push(g2.value);
     }
     res.push({ command, args, index: m.index! });
+  }
+  return res;
+}
+
+const DATA_RE = /\\(addplot3?|pgfplotstableread|pgfplotstabletypeset|csvreader|csvautotabular|csvautobooktabular|csvautolongtable|DTLloaddb|DTLloadrawdb)(?![A-Za-z@])\*?/g;
+
+/**
+ * Data files read by plotting/table packages: pgfplots `\addplot table {f}` / `\addplot file {f}`,
+ * `\pgfplotstableread{f}`, csvsimple, datatool. Inline tables and macro arguments are skipped.
+ */
+export function extractDataRefs(src: string): { command: string; target: string; index: number }[] {
+  const res: { command: string; target: string; index: number }[] = [];
+  for (const m of src.matchAll(DATA_RE)) {
+    const command = m[1];
+    let i = m.index! + m[0].length;
+    if (command.startsWith("addplot")) {
+      while (/\s/.test(src[i] ?? "")) i++;
+      if (src[i] === "+") i++;
+      i = skipOptional(src, i);
+      const kw = /^(table|file)(?![A-Za-z@])/.exec(src.slice(i, i + 6));
+      if (!kw) continue;
+      i = skipOptional(src, i + kw[1].length);
+    } else {
+      i = skipOptional(src, i);
+      if (command.startsWith("DTLload")) {
+        const name = readGroup(src, i);
+        if (!name) continue;
+        i = skipOptional(src, name.end);
+      }
+    }
+    const g = readGroup(src, i);
+    if (!g) continue;
+    const target = g.value.trim();
+    if (!target || /[\s\\#{}]/.test(target)) continue;
+    res.push({ command, target, index: m.index! });
   }
   return res;
 }
@@ -299,6 +334,19 @@ export function resolveProject(main: string, texts: Record<string, string>, allP
         }
       }
     }
+
+    for (const d of extractDataRefs(src)) {
+      const line = lineAt(src, d.index);
+      const base: Reference = { kind: "file", command: d.command, target: d.target, from: path, line, resolved: null };
+      if (isAbsolutePath(d.target)) {
+        refs.push({ ...base, absolute: true });
+        warnings.push({ level: "danger", code: "absolute-path", message: `Absolute path in \\${d.command}{${d.target}}. arXiv only sees files inside your upload; use a relative path.`, file: path, line });
+        continue;
+      }
+      const hit = index.find(bases.map((dir) => join(dir, d.target)));
+      record({ ...base, resolved: hit?.path ?? null, caseMismatch: hit?.caseMismatch }, `data file (\\${d.command} in ${path}:${line})`);
+      if (!hit) warnings.push({ level: "warning", code: "missing-file", message: `\\${d.command} reads ${d.target}, which isn't in the zip.`, file: path, line });
+    }
   }
 
   const gDirs = uniq(graphicsDirs.map((d) => join(mainDir, d)));
@@ -317,7 +365,20 @@ export function resolveProject(main: string, texts: Record<string, string>, allP
     // epstopdf convention: an .eps reference may be satisfied by the converted pdf and vice versa.
     if (!hit && extname(clean) === "eps") hit = index.find(dirs.map((d) => join(d, clean.replace(/\.eps$/i, "-eps-converted-to.pdf"))));
     record({ ...base, resolved: hit?.path ?? null, caseMismatch: hit?.caseMismatch }, `figure (\\${cmd.command} in ${from}:${line})`);
-    if (!hit) warnings.push({ level: "danger", code: "missing-file", message: `\\${cmd.command}{${target}} points to a figure that isn't in the zip.`, file: from, line });
+    let exports = 0;
+    if (cmd.command === "includesvg") {
+      // svg package: Inkscape exports cached in svg-inkscape/<name>_svg-tex.pdf(+_tex) are used instead of the .svg.
+      const stem = basename(clean).replace(/\.svg$/i, "");
+      for (const d of uniq([mainDir, fileDir]))
+        for (const kind of ["tex", "raw"])
+          for (const e of ["pdf", "pdf_tex", "eps", "eps_tex", "png"]) {
+            const exp = index.find([join(d, `svg-inkscape/${stem}_svg-${kind}.${e}`)]);
+            if (!exp) continue;
+            exports++;
+            record({ ...base, resolved: exp.path, caseMismatch: exp.caseMismatch }, `Inkscape export for \\includesvg in ${from}:${line}`);
+          }
+    }
+    if (!hit && !exports) warnings.push({ level: "danger", code: "missing-file", message: `\\${cmd.command}{${target}} points to a figure that isn't in the zip.`, file: from, line });
   }
 
   return { main, used, refs, warnings, usesBibliography, usesBiblatex };

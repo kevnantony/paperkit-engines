@@ -217,3 +217,31 @@ describe("similarity", () => {
         }
   });
 });
+
+describe("comments and unparseable chunks inside entries", () => {
+  it("treats %-lines between fields as comments", () => {
+    const f = parseBibtex("@article{k,\n  title = {T},\n  % author = {old},\n  author = {New, Author},\n  %year = {1999}\n  year = {2020}\n}\n");
+    expect(f.warnings).toEqual([]);
+    const [e] = entriesOf(f);
+    expect(e.fields.map((x) => [x.name, getField(e, x.name)])).toEqual([
+      ["title", "T"],
+      ["author", "New, Author"],
+      ["year", "2020"],
+    ]);
+  });
+
+  it("keeps % inside braced and quoted values", () => {
+    const [e] = entriesOf(parseBibtex('@misc{k, note = {50\\% off\n% not a comment}, title = "a % b"}'));
+    expect(getField(e, "note")).toBe("50\\% off\n% not a comment");
+    expect(getField(e, "title")).toBe("a % b");
+  });
+
+  it("keeps an unparseable chunk as an item, in order, with its raw text", () => {
+    const f = parseBibtex("@misc{a, title={A}}\n@misc{b, title={B}\n  year={2020}}\n@misc{c, title={C}}\n");
+    expect(f.warnings).toHaveLength(1);
+    expect(f.items.map((i) => i.kind)).toEqual(["entry", "unparsed", "entry"]);
+    const bad = f.items[1];
+    expect(bad.kind === "unparsed" && bad.raw).toBe("@misc{b, title={B}\n  year={2020}}");
+    expect(serializeBibtex(f.items)).toContain("@misc{b, title={B}\n  year={2020}}");
+  });
+});

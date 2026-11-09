@@ -15,8 +15,8 @@ const BLOCK_START = /@[a-zA-Z][\w-]*\s*[{(]/g;
 const ENTRY_START = /\n[ \t]*@[a-zA-Z]+[ \t]*[{(]/g;
 
 /**
- * Parse BibTeX source. Never throws: anything it cannot understand is skipped and reported in `warnings`,
- * and parsing resumes at the next line that starts with `@`.
+ * Parse BibTeX source. Never throws: a block it cannot understand is kept verbatim as an "unparsed" item,
+ * reported in `warnings`, and parsing resumes at the next line that starts with `@`.
  */
 export function parseBibtex(src: string): BibFile {
   const text = src.replace(/\r\n?/g, "\n").replace(/^﻿/, "");
@@ -57,7 +57,9 @@ export function parseBibtex(src: string): BibFile {
       const next = ENTRY_START.exec(text);
       const end = next ? next.index + 1 : text.length;
       const raw = text.slice(at, end).trim();
-      warnings.push({ line: lineAt(at), message: `${err.message} (line ${lineAt(err.pos)}); entry skipped`, raw: truncate(raw, 400) });
+      const message = `${err.message} (line ${lineAt(err.pos)}); copied unchanged`;
+      items.push({ kind: "unparsed", raw, message, line: lineAt(at) });
+      warnings.push({ line: lineAt(at), message, raw: truncate(raw, 400) });
       pos = end;
     }
   }
@@ -115,13 +117,13 @@ function parseBlock(text: string, at: number, lineAt: (p: number) => number): { 
   }
   const key = text.slice(p, keyEnd);
   if (!key) throw new ParseError("Missing citation key", p);
-  p = skipWs(text, keyEnd);
+  p = skipWsAndComments(text, keyEnd);
   const fields: BibField[] = [];
   if (text[p] === ",") p++;
   else if (text[p] !== close) throw new ParseError(`Expected "," after key "${key}"`, p);
 
   for (;;) {
-    p = skipWs(text, p);
+    p = skipWsAndComments(text, p);
     if (p >= text.length) throw new ParseError(`Unexpected end of file inside "${key}"`, p);
     if (text[p] === close) {
       p++;
@@ -134,7 +136,7 @@ function parseBlock(text: string, at: number, lineAt: (p: number) => number): { 
     p = skipWs(text, p + 1);
     const { parts, end } = parseValue(text, p);
     fields.push({ name: name.toLowerCase(), value: parts });
-    p = skipWs(text, end);
+    p = skipWsAndComments(text, end);
     if (text[p] === ",") {
       p++;
       continue;
@@ -229,6 +231,20 @@ function readIdent(text: string, p: number): string {
 function skipWs(text: string, p: number): number {
   while (p < text.length && /\s/.test(text[p])) p++;
   return p;
+}
+
+/**
+ * Like skipWs, but also skips `%` comments up to the end of the line. Only used between fields of an
+ * entry, never inside braced or quoted values, so `50\%` and `{a % b}` are untouched. `%` can never
+ * start a field name, so this cannot hide a real field.
+ */
+function skipWsAndComments(text: string, p: number): number {
+  for (;;) {
+    p = skipWs(text, p);
+    if (text[p] !== "%") return p;
+    const nl = text.indexOf("\n", p);
+    p = nl === -1 ? text.length : nl + 1;
+  }
 }
 
 function makeLineIndex(text: string): (pos: number) => number {

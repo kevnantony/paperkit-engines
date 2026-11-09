@@ -179,3 +179,45 @@ describe("cleanBibtex", () => {
     expect(r.stats).toEqual({ entries: 0, fieldsRemoved: 0, entriesChanged: 0, warnings: [] });
   });
 });
+
+describe("rewriting citation keys", () => {
+  it("updates crossref, xdata and related fields that point at rewritten keys", () => {
+    const src = [
+      "@proceedings{Proc19, title={Proceedings of Something}, editor={Doe, Jane}, year={2019}}",
+      "@inproceedings{X1, title={Neural widgets}, author={Smith, John}, year={2019}, crossref={Proc19}}",
+      "@inproceedings{X2, title={Better widgets}, author={Lee, Ann}, year={2019}, xdata={Proc19}, related={X1, Proc19,external}}",
+    ].join("\n");
+    const r = cleanBibtex(src, opts({ regenerateKeys: true }));
+    const es = entriesOf(parseBibtex(r.output));
+    expect(es.map((e) => e.key)).toEqual(["doe2019proceedings", "smith2019neural", "lee2019better"]);
+    expect(getField(es[1], "crossref")).toBe("doe2019proceedings");
+    expect(getField(es[2], "xdata")).toBe("doe2019proceedings");
+    expect(getField(es[2], "related")).toBe("smith2019neural, doe2019proceedings,external");
+  });
+});
+
+describe("unparseable entries", () => {
+  it("passes them through unchanged in their original position", () => {
+    const src = "@misc{a, title={Alpha}}\n\n@misc{bad, title={Beta}\n  author={Doe, Jane}}\n\n@misc{c, title={Gamma}}\n";
+    const r = cleanBibtex(src, none);
+    expect(r.stats.warnings).toHaveLength(1);
+    expect(r.output).toBe("@misc{a,\n  title = {Alpha},\n}\n\n@misc{bad, title={Beta}\n  author={Doe, Jane}}\n\n@misc{c,\n  title = {Gamma},\n}\n");
+  });
+
+  it("never outputs fewer entries than the input has", () => {
+    const src = fx("malformed.bib");
+    const count = (s: string) => (s.match(/^@\w+\s*\{/gm) ?? []).length;
+    for (const sort of ["none", "key"] as const) {
+      const r = cleanBibtex(src, opts({ sort }));
+      expect(count(r.output)).toBe(count(src));
+      expect(r.output).toContain("@article{broken1,\n  title = {Unbalanced {braces here},");
+    }
+  });
+
+  it("keeps an entry whose body contains a commented-out field", () => {
+    const r = cleanBibtex("@article{k,\n  title = {T},\n  % author = {Old, Name},\n  author = {New, Name},\n  year = {2020}\n}\n", opts());
+    expect(r.stats.warnings).toEqual([]);
+    expect(r.output).toContain("author = {New, Name},");
+    expect(r.output).not.toContain("Old");
+  });
+});

@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import { PDFDocument } from "pdf-lib";
+import { PDFDict, PDFDocument, PDFName } from "pdf-lib";
 import { describe, expect, it } from "vitest";
 import { formatLocation, reportToMarkdown, runAudit, scanSourceZip } from "../src";
 import { findIdentifier, identifierRegex, parseIdentifiers, snippetAround } from "../src";
@@ -184,6 +184,52 @@ describe("PDF metadata", () => {
     const once = await stripPdfMetadata(fx("figure.pdf"));
     const twice = await stripPdfMetadata(once);
     expect((await readPdfMetadata(twice)).author).toBeNull();
+  });
+});
+
+describe("PDF annotations, attachments and local links (regression)", () => {
+  it("reads annotation authors, attachments and local links", async () => {
+    const m = await readPdfMetadata(fx("annotated.pdf"));
+    expect(m.annotationAuthors).toEqual(["Reviewer Ann Author"]);
+    expect(m.annotationMarkup).toBe(3);
+    expect(m.attachments.map((a) => a.name).sort()).toEqual(["ann-lab-notebook.txt", "ann-supplement.zip"]);
+    expect(m.localLinks).toEqual(["file:///Users/annauthor/results/table.csv"]);
+    const clean = await readPdfMetadata(fx("paper.pdf"));
+    expect([clean.annotationAuthors, clean.attachments, clean.localLinks, clean.annotationMarkup]).toEqual([[], [], [], 0]);
+  });
+
+  it("flags annotation authors, attachments and local links as high", async () => {
+    const fs = scanPdfMetadata(await readPdfMetadata(fx("annotated.pdf")), []);
+    const byRule = (r: string) => fs.filter((f) => f.rule === r);
+    expect(byRule("annotation-author").map((f) => [f.severity, f.snippet])).toEqual([["high", "Reviewer Ann Author"]]);
+    expect(byRule("attachment")).toHaveLength(1);
+    expect(byRule("attachment")[0].severity).toBe("high");
+    expect(byRule("attachment")[0].title).toBe("PDF has 2 embedded attachments");
+    expect(byRule("attachment")[0].snippet).toBe("ann-supplement.zip, ann-lab-notebook.txt");
+    expect(byRule("local-link").map((f) => [f.severity, f.snippet])).toEqual([["high", "file:///Users/annauthor/results/table.csv"]]);
+  });
+
+  it("strips annotation authors/dates and attachments, keeps annotations, links and form fields", async () => {
+    const out = await stripPdfMetadata(fx("annotated.pdf"));
+    const raw = Buffer.from(out).toString("latin1");
+    for (const leak of ["Ann Author", "ann-lab-notebook", "ann-supplement", "ann private", "D:20240501"]) expect(raw, leak).not.toContain(leak);
+    const m = await readPdfMetadata(out);
+    expect([m.annotationAuthors, m.attachments, m.annotationMarkup]).toEqual([[], [], 0]);
+    expect(m.localLinks).toHaveLength(1);
+    const doc = await PDFDocument.load(out);
+    const annots = doc.getPage(0).node.Annots()!.asArray().map((r) => doc.context.lookup(r) as PDFDict);
+    const subtypes = annots.map((a) => a.get(PDFName.of("Subtype"))!.toString()).sort();
+    expect(subtypes).toEqual(["/Link", "/Link", "/Popup", "/Text", "/Widget"]);
+    const note = annots.find((a) => a.get(PDFName.of("Subtype"))!.toString() === "/Text")!;
+    expect(note.get(PDFName.of("Contents"))!.toString()).toContain("Check this claim");
+    expect(doc.getForm().getFields().map((f) => f.getName())).toEqual(["reviewer.notes"]);
+  });
+
+  it("keeps attachments when asked, still dropping annotation authors", async () => {
+    const out = await stripPdfMetadata(fx("annotated.pdf"), { keepTitle: false, removeAttachments: false });
+    const m = await readPdfMetadata(out);
+    expect(m.attachments).toHaveLength(2);
+    expect(m.annotationAuthors).toEqual([]);
   });
 });
 

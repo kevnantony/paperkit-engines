@@ -2,7 +2,7 @@
 import { writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { PDFDocument, PDFName, StandardFonts } from "pdf-lib";
+import { PDFDocument, PDFHexString, PDFName, PDFString, StandardFonts } from "pdf-lib";
 import JSZip from "jszip";
 import { makeJpegWithArtist, makePng } from "./images.mjs";
 
@@ -75,6 +75,34 @@ async function figurePdf(author) {
   return doc.save({ useObjectStreams: false });
 }
 
+/** A PDF that leaks through annotations: author/date/rich text on a note + popup, attachments, a file:// link. */
+async function annotatedPdf() {
+  const doc = await PDFDocument.create({ updateMetadata: false });
+  const font = await doc.embedFont(StandardFonts.Helvetica);
+  const page = doc.addPage([612, 792]);
+  page.drawText("Anonymous submission with reviewer notes", { x: 72, y: 720, size: 12, font });
+  const ctx = doc.context;
+  const S = (v) => PDFString.of(v);
+  const date = S("D:20240501100000Z");
+  const popupRef = ctx.nextRef();
+  const noteRef = ctx.register(
+    ctx.obj({ Type: "Annot", Subtype: "Text", Rect: [72, 600, 92, 620], Contents: S("Check this claim"), T: S("Reviewer Ann Author"), M: date, CreationDate: date, Subj: S("Ann Author note"), RC: S("<body><p>Ann Author: check this claim</p></body>"), Popup: popupRef }),
+  );
+  ctx.assign(popupRef, ctx.obj({ Type: "Annot", Subtype: "Popup", Rect: [100, 560, 300, 640], Parent: noteRef, T: S("Reviewer Ann Author"), M: date }));
+  const attached = ctx.stream("lab notebook body: ann private results", { Type: "EmbeddedFile" });
+  const fileSpec = ctx.obj({ Type: "Filespec", F: S("ann-lab-notebook.txt"), UF: PDFHexString.fromText("ann-lab-notebook.txt"), EF: { F: ctx.register(attached) } });
+  const attachRef = ctx.register(ctx.obj({ Type: "Annot", Subtype: "FileAttachment", Rect: [72, 500, 92, 520], FS: fileSpec, Contents: S("notebook"), T: S("Reviewer Ann Author") }));
+  const linkRef = ctx.register(
+    ctx.obj({ Type: "Annot", Subtype: "Link", Rect: [72, 450, 300, 470], Border: [0, 0, 0], A: { S: "URI", URI: S("file:///Users/annauthor/results/table.csv") } }),
+  );
+  const webRef = ctx.register(ctx.obj({ Type: "Annot", Subtype: "Link", Rect: [72, 420, 300, 440], Border: [0, 0, 0], A: { S: "URI", URI: S("https://example.org/paper") } }));
+  page.node.set(PDFName.of("Annots"), ctx.obj([noteRef, popupRef, attachRef, linkRef, webRef]));
+  const field = doc.getForm().createTextField("reviewer.notes");
+  field.addToPage(page, { x: 72, y: 380, width: 200, height: 20, font });
+  await doc.attach(new TextEncoder().encode("supplement body: ann private data"), "ann-supplement.zip", { mimeType: "application/zip", description: "Supplement", creationDate: FIXED, modificationDate: FIXED });
+  return doc.save({ useObjectStreams: false });
+}
+
 const MAIN_TEX = String.raw`\documentclass{article}
 \usepackage[final]{neurips_2024}
 \usepackage{graphicx}
@@ -116,4 +144,5 @@ async function sourceZip() {
 writeFileSync(join(here, "paper.pdf"), await paper());
 writeFileSync(join(here, "figure.pdf"), await figurePdf("J. Doe"));
 writeFileSync(join(here, "source.zip"), await sourceZip());
+writeFileSync(join(here, "annotated.pdf"), await annotatedPdf());
 console.log("anon fixtures written");

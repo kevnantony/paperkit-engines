@@ -20,6 +20,11 @@ export interface CleanOptions {
   /** Downscale raster images larger than `maxImageDimension` (applied by the caller, in the browser). */
   downscaleImages: boolean;
   maxImageDimension: number;
+  /**
+   * Remove files of unknown type (data, notes, …) that no traced file mentions. Default false: such files
+   * are kept with a "kept: unknown type" note, because a package or macro may read them.
+   */
+  removeUnreferenced: boolean;
 }
 
 export const defaultCleanOptions: CleanOptions = {
@@ -27,6 +32,7 @@ export const defaultCleanOptions: CleanOptions = {
   keepBib: false,
   downscaleImages: false,
   maxImageDimension: 2000,
+  removeUnreferenced: false,
 };
 
 export type FileKind = "tex" | "figure" | "bibliography" | "support" | "build" | "system" | "other";
@@ -47,12 +53,24 @@ export interface CleanPlan {
   refs: Reference[];
 }
 
-/** Text-like files we need to read to analyse the project. */
-export const TEXT_EXTS = ["tex", "ltx", "sty", "cls", "bib", "bbl", "bst", "bbx", "cbx", "def", "cfg", "clo", "tikz", "pgf", "txt"];
+/**
+ * Text-like files we always read to analyse the project. Any other file that looks like text (see
+ * `looksLikeText`) is read too, so `\input{fig.pdf_tex}` or `\input{body.inc}` can be traced whatever the extension.
+ */
+export const TEXT_EXTS = ["tex", "ltx", "sty", "cls", "bib", "bbl", "bst", "bbx", "cbx", "lbx", "dbx", "def", "cfg", "clo", "fd", "ldf", "lco", "tikz", "pgf", "pdf_tex", "eps_tex", "ps_tex", "pstex_t", "pdf_t", "inc", "txt"];
+/** Extensions that are never LaTeX text (no need to sniff their bytes). */
+export const BINARY_EXTS = [...GRAPHICS_EXTS.filter((e) => e !== "svg"), "gz", "zip", "tar", "tgz", "xz", "bz2", "7z", "otf", "ttf", "pfb", "pfm", "afm", "tfm", "vf", "woff", "woff2", "dvi", "xdv", "mp4", "mov", "avi", "wav", "mp3", "webp", "heic", "psd", "ai", "xcf", "docx", "xlsx", "pptx"];
+
+/** Heuristic: no NUL byte in the first 8 KB and small enough to parse. */
+export function looksLikeText(bytes: Uint8Array): boolean {
+  if (bytes.length > 8 * 1024 * 1024) return false;
+  const n = Math.min(bytes.length, 8192);
+  for (let i = 0; i < n; i++) if (bytes[i] === 0) return false;
+  return true;
+}
 
 const BUILD_EXTS = ["aux", "log", "out", "toc", "lof", "lot", "fls", "fdb_latexmk", "blg", "bcf", "nav", "snm", "vrb", "dvi", "xdv", "idx", "ilg", "ind", "brf", "glg", "glo", "gls", "ist", "acn", "acr", "alg", "loa", "thm", "spl", "synctex", "pyg", "listing"];
 const SUPPORT_EXTS = ["sty", "cls", "bst", "bbx", "cbx", "def", "cfg", "clo", "fd", "ldf", "ins", "dtx"];
-const DATA_EXTS = ["csv", "dat", "tsv", "txt", "tikz", "pgf", "table", "json"];
 
 function systemJunk(path: string): string | null {
   const name = basename(path);
@@ -66,11 +84,14 @@ function systemJunk(path: string): string | null {
   return null;
 }
 
-/** Is `name` (without extension) mentioned as a {…name} token or path segment in the sources? */
+/**
+ * Is `name` (without extension) mentioned as a {…name} token or path segment in the sources? Any chain of
+ * extensions may follow (`fig.pdf_tex`, `plot.tikz.tex`), so the figure behind an Inkscape export is kept.
+ */
 function mentionedIn(allSource: string, path: string): boolean {
   const stem = basename(stripExt(path));
   if (stem.length < 2) return false;
-  const re = new RegExp(`[{/,\\s]${stem.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(\\.[A-Za-z0-9]+)?\\s*[},]`);
+  const re = new RegExp(`(?:^|[{/,\\s"'=])${stem.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?:\\.[A-Za-z0-9_-]+)*\\s*(?=[},\\])"';]|\\s|$)`);
   return re.test(allSource);
 }
 
@@ -91,12 +112,14 @@ export function planCleanup(files: ProjectFile[], texts: Record<string, string>,
   const graph = main ? resolveProject(main, texts, files.map((f) => f.path)) : null;
   if (graph) warnings.push(...graph.warnings);
   const used = graph?.used ?? new Map<string, string>();
+  // Every traced text file counts, whatever its extension (.tikz, .pdf_tex, .sty, …).
   const allSource = Object.entries(texts)
-    .filter(([p]) => extname(p) === "tex" && (!graph || used.has(p)))
+    .filter(([p]) => !graph || used.has(p))
     .map(([, t]) => blankComments(t))
     .join("\n");
   const mainStem = main ? stripExt(main) : null;
   const hasMacroRefs = graph?.refs.some((r) => r.macro) ?? false;
+  const unknownKept: string[] = [];
 
   const entries: PlanEntry[] = files.map(({ path, size }) => {
     const ext = extname(path);
@@ -131,13 +154,22 @@ export function planCleanup(files: ProjectFile[], texts: Record<string, string>,
       return e("figure", "remove", "unused figure: never referenced by \\includegraphics");
     }
     if (SUPPORT_EXTS.includes(ext)) return e("support", "keep", "LaTeX support file (style/class)");
-    if (DATA_EXTS.includes(ext)) {
-      if (mentionedIn(allSource, path) || allSource.includes(name)) return e("other", "keep", "data file mentioned in the source");
-      return e("other", "remove", "not referenced by any included file");
-    }
     if (dirname(path) === "" && /^readme/i.test(name)) return e("other", "remove", "README is not needed by arXiv");
-    return e("other", "remove", "not referenced by any included file");
+    if (mentionedIn(allSource, path) || allSource.includes(name)) return e("other", "keep", "file name appears in the source");
+    // Neither recognizable build junk nor an unused figure: keep unless the user opted in to removal.
+    if (opts.removeUnreferenced) return e("other", "remove", "not referenced by any included file (removed by option)");
+    unknownKept.push(path);
+    return e("other", "keep", "kept: unknown type (not referenced, but a package or macro may read it)");
   });
+
+  if (unknownKept.length) {
+    const n = unknownKept.length;
+    warnings.push({
+      level: "info",
+      code: "unknown-kept",
+      message: `${n} file${n === 1 ? "" : "s"} of unknown type ${n === 1 ? "was" : "were"} kept to be safe (${unknownKept.slice(0, 4).join(", ")}${n > 4 ? ", …" : ""}): nothing references ${n === 1 ? "it" : "them"}, but a package or macro may read ${n === 1 ? "it" : "them"}. Turn on “Remove unreferenced files” to drop ${n === 1 ? "it" : "them"}.`,
+    });
+  }
 
   if (graph?.usesBibliography && mainStem) {
     const bbl = files.find((f) => f.path === `${mainStem}.bbl`);

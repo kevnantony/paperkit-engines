@@ -42,19 +42,32 @@ export const reasonLabel: Record<DupReason, string> = {
   "same-key": "Same key",
 };
 
+/**
+ * "duplicates": linked by DOI, or by title with a compatible year. "same-key": entries that only share
+ * a citation key; they are probably different papers and are never merged unless the user says so.
+ */
+export type DupGroupKind = "duplicates" | "same-key";
+
 export interface DupGroup {
   id: number;
+  kind: DupGroupKind;
   members: Candidate[];
   reasons: DupReason[];
   /** Highest title similarity between members, in [0, 1]. */
   similarity: number;
   /** Candidate id suggested to keep (published version, most fields). */
   suggested: number;
-  /**
-   * Pre-selected choice. "all" when the only link is a shared citation key between entries whose
-   * titles differ: those are different papers that need a new key, not a merge.
-   */
+  /** Pre-selected choice: the suggested entry for duplicates, "all" for same-key groups. */
   defaultChoice: number | "all";
+}
+
+/** A block the parser could not read. It is copied to the merged output unchanged. */
+export interface Passthrough {
+  raw: string;
+  source: string;
+  line: number;
+  /** Number of candidates that come before it in the combined input. */
+  before: number;
 }
 
 export interface FindResult {
@@ -63,6 +76,8 @@ export interface FindResult {
   warnings: (ParseWarning & { source: string })[];
   /** @string / @preamble / @comment items from all inputs, deduplicated. */
   extras: BibItem[];
+  /** Unreadable chunks, kept in their original position in the merged output. */
+  passthrough: Passthrough[];
 }
 
 export interface FindOptions {
@@ -74,6 +89,7 @@ export function findDuplicates(files: SourceFile[], opts: FindOptions = { thresh
   const candidates: Candidate[] = [];
   const warnings: FindResult["warnings"] = [];
   const extras: BibItem[] = [];
+  const passthrough: Passthrough[] = [];
   const seenExtras = new Set<string>();
 
   for (const file of files) {
@@ -93,6 +109,8 @@ export function findDuplicates(files: SourceFile[], opts: FindOptions = { thresh
           arxiv: isArxivEntry(it),
           fieldCount: it.fields.filter((f) => valueText(f.value).trim()).length,
         });
+      } else if (it.kind === "unparsed") {
+        passthrough.push({ raw: it.raw, source: file.name, line: it.line, before: candidates.length });
       } else if (it.kind !== "comment" || it.explicit) {
         const sig = serializeItem(it);
         if (!seenExtras.has(sig)) {
@@ -103,7 +121,8 @@ export function findDuplicates(files: SourceFile[], opts: FindOptions = { thresh
     }
   }
 
-  // Union-find over candidates, remembering why pairs were linked.
+  // Union-find over candidates, remembering why pairs were linked. Only DOI and title links are
+  // unioned; a shared key alone never puts entries into a duplicate group (see same-key groups below).
   const parent = candidates.map((_, i) => i);
   const find = (i: number): number => (parent[i] === i ? i : (parent[i] = find(parent[i])));
   const pairReasons = new Map<number, Set<DupReason>>();
@@ -113,7 +132,6 @@ export function findDuplicates(files: SourceFile[], opts: FindOptions = { thresh
     const rb = find(b);
     if (ra !== rb) parent[rb] = ra;
     const root = find(a);
-    // attach reason to the root after union; re-keyed when groups are collected
     const set = pairReasons.get(root) ?? new Set<DupReason>();
     set.add(reason);
     pairReasons.set(root, set);
@@ -138,22 +156,16 @@ export function findDuplicates(files: SourceFile[], opts: FindOptions = { thresh
     else link(prev, c.id, "doi", 1);
   }
 
-  // 2. Same citation key (only meaningful across files, but also catches copy-paste within one).
-  const byKey = new Map<string, number>();
-  for (const c of candidates) {
-    const k = c.entry.key.toLowerCase();
-    const prev = byKey.get(k);
-    if (prev === undefined) byKey.set(k, c.id);
-    else link(prev, c.id, "same-key", titleSimilarity(candidates[prev].title, c.title));
-  }
-
-  // 3. Title similarity, with arXiv-vs-published pairs called out.
+  // 2. Title similarity, with arXiv-vs-published pairs called out.
   const sets = candidates.map((c) => new Set(c.title.split(" ")));
+  const markers = candidates.map((c) => seriesMarkers(c.title));
   for (const [i, j] of candidatePairs(candidates)) {
     const a = candidates[i];
     const b = candidates[j];
     // Different DOIs on both sides means two distinct publications (e.g. conference + journal version).
     if (a.doi && b.doi && a.doi !== b.doi && !a.arxiv && !b.arxiv) continue;
+    // Part I / Part II, 2019 / 2020 proceedings, or different years: different works.
+    if (markers[i] !== markers[j] || !yearsCompatible(a, b)) continue;
     const sim = titleSimilarityAtLeast(a.title, b.title, opts.threshold, sets[i], sets[j]);
     if (!sim) continue;
     if (a.arxiv !== b.arxiv) link(i, j, "arxiv-published", sim);
@@ -166,18 +178,60 @@ export function findDuplicates(files: SourceFile[], opts: FindOptions = { thresh
     byRoot.set(r, [...(byRoot.get(r) ?? []), c]);
   }
 
-  const groups: DupGroup[] = [];
+  const groups: Omit<DupGroup, "id">[] = [];
+  const order: DupReason[] = ["doi", "arxiv-published", "same-title", "similar-title"];
   for (const [root, members] of byRoot) {
     if (members.length < 2) continue;
-    const order: DupReason[] = ["doi", "arxiv-published", "same-title", "similar-title", "same-key"];
     const reasons = order.filter((r) => pairReasons.get(root)?.has(r));
-    const similarity = pairSim.get(root) ?? 0;
     const suggested = suggestKeep(members);
-    const keyOnly = reasons.length === 1 && reasons[0] === "same-key" && similarity < opts.threshold;
-    groups.push({ id: groups.length, members, reasons, similarity, suggested, defaultChoice: keyOnly ? "all" : suggested });
+    groups.push({ kind: "duplicates", members, reasons, similarity: pairSim.get(root) ?? 0, suggested, defaultChoice: suggested });
   }
 
-  return { candidates, groups, warnings, extras };
+  // 3. Shared citation keys, reported on their own and defaulting to "keep all". Skipped when every
+  // entry with that key is already in the same duplicate group (merging that group resolves it).
+  const byKey = new Map<string, Candidate[]>();
+  for (const c of candidates) {
+    const k = c.entry.key.toLowerCase();
+    byKey.set(k, [...(byKey.get(k) ?? []), c]);
+  }
+  for (const members of byKey.values()) {
+    if (members.length < 2) continue;
+    if (members.every((m) => find(m.id) === find(members[0].id))) continue;
+    let similarity = 0;
+    for (let i = 0; i < members.length; i++)
+      for (let j = i + 1; j < members.length; j++) similarity = Math.max(similarity, titleSimilarity(members[i].title, members[j].title));
+    groups.push({ kind: "same-key", members, reasons: ["same-key"], similarity, suggested: suggestKeep(members), defaultChoice: "all" });
+  }
+
+  const first = (g: Omit<DupGroup, "id">) => g.members[0].id;
+  const sorted = groups
+    .sort((a, b) => first(a) - first(b) || (a.kind === b.kind ? 0 : a.kind === "duplicates" ? -1 : 1))
+    .map((g, id) => ({ id, ...g }));
+
+  return { candidates, groups: sorted, warnings, extras, passthrough };
+}
+
+const ROMAN = /^(?=[ivxlc])c{0,3}(?:xc|xl|l?x{0,3})(?:ix|iv|v?i{0,3})$/;
+const SERIES_WORDS = new Set(["part", "volume", "vol", "chapter"]);
+
+/**
+ * Tokens that tell apart works in a series: numbers (years, editions, ResNet-50/101), roman numerals,
+ * and the word after "part" / "volume" / "vol" / "chapter". Titles are only linked when these match.
+ */
+export function seriesMarkers(title: string): string {
+  const toks = title.split(" ");
+  const out: string[] = [];
+  toks.forEach((t, i) => {
+    if (/\d/.test(t) || ROMAN.test(t) || (i > 0 && SERIES_WORDS.has(toks[i - 1]))) out.push(t);
+  });
+  return out.sort().join(" ");
+}
+
+/** Same year, or one unknown. An arXiv preprint and its published version may be a year apart. */
+function yearsCompatible(a: Candidate, b: Candidate): boolean {
+  if (!a.year || !b.year) return true;
+  const d = Math.abs(Number(a.year) - Number(b.year));
+  return d === 0 || (d <= 1 && a.arxiv !== b.arxiv);
 }
 
 /**
@@ -235,53 +289,53 @@ export interface MergeResult {
 }
 
 export function mergeDuplicates(result: FindResult, choices: Choices, opts: MergeOptions = { fillMissing: false }): MergeResult {
-  const drop = new Set<number>();
-  const renames: { from: string; to: string }[] = [];
-  const filled = new Map<number, BibEntry>();
-
+  // Resolve each group's choice. An entry chosen in any group is never dropped by another group.
+  const resolved: { group: DupGroup; keep: Candidate }[] = [];
   for (const g of result.groups) {
     const choice = choices[g.id] ?? g.defaultChoice;
     if (choice === "all") continue;
     const keep = g.members.find((m) => m.id === choice) ?? g.members.find((m) => m.id === g.suggested)!;
-    let merged: BibEntry | null = null;
-    for (const m of g.members) {
-      if (m.id === keep.id) continue;
-      drop.add(m.id);
+    resolved.push({ group: g, keep });
+  }
+  const keepIds = new Set(resolved.map((r) => r.keep.id));
+  const drop = new Set<number>();
+  for (const { group, keep } of resolved) for (const m of group.members) if (m.id !== keep.id && !keepIds.has(m.id)) drop.add(m.id);
+
+  const renames: { from: string; to: string }[] = [];
+  const filled = new Map<number, BibEntry>();
+  // The kept entry takes the position of the first member of its group.
+  const slot = new Map<number, number>();
+  for (const { group, keep } of resolved) {
+    slot.set(keep.id, Math.min(slot.get(keep.id) ?? keep.id, ...group.members.map((m) => m.id)));
+    for (const m of group.members) {
+      if (!drop.has(m.id)) continue;
       if (m.entry.key !== keep.entry.key && !renames.some((r) => r.from === m.entry.key)) {
         renames.push({ from: m.entry.key, to: keep.entry.key });
       }
       if (opts.fillMissing) {
-        merged ??= { ...keep.entry, fields: [...keep.entry.fields] };
+        const merged = filled.get(keep.id) ?? { ...keep.entry, fields: [...keep.entry.fields] };
         for (const f of m.entry.fields) {
           if (!merged.fields.some((x) => x.name === f.name)) merged.fields.push(f);
         }
+        filled.set(keep.id, merged);
       }
     }
-    if (merged && merged.fields.length !== keep.entry.fields.length) filled.set(keep.id, merged);
   }
 
-  // The kept entry takes the position of the first member of its group.
-  const slot = new Map<number, number>(); // first member id → kept id
-  const placed = new Set<number>();
-  for (const g of result.groups) {
-    const choice = choices[g.id] ?? g.defaultChoice;
-    if (choice === "all") continue;
-    const keepId = g.members.some((m) => m.id === choice) ? choice : g.suggested;
-    slot.set(Math.min(...g.members.map((m) => m.id)), keepId);
-  }
-
-  const blocks: string[] = result.extras.map((x) => serializeItem(x));
-  let kept = 0;
+  const blocks: { pos: number; text: string }[] = [];
   for (const c of result.candidates) {
-    const id = slot.get(c.id) ?? (drop.has(c.id) || placed.has(c.id) ? undefined : c.id);
-    if (id === undefined) continue;
-    placed.add(id);
-    kept++;
-    const f = filled.get(id);
-    blocks.push(f ? serializeEntry(f) : result.candidates[id].entry.raw.trim());
+    if (drop.has(c.id)) continue;
+    const f = filled.get(c.id);
+    const text = f && f.fields.length !== c.entry.fields.length ? serializeEntry(f) : c.entry.raw.trim();
+    blocks.push({ pos: slot.get(c.id) ?? c.id, text });
   }
+  const kept = blocks.length;
+  // Unreadable chunks stay where they were, between the same entries as in the input.
+  for (const p of result.passthrough) blocks.push({ pos: p.before - 0.5, text: p.raw });
+  blocks.sort((a, b) => a.pos - b.pos);
 
-  return { output: blocks.length ? blocks.join("\n\n") + "\n" : "", renames, removed: drop.size, kept };
+  const all = [...result.extras.map((x) => serializeItem(x)), ...blocks.map((b) => b.text)];
+  return { output: all.length ? all.join("\n\n") + "\n" : "", renames, removed: drop.size, kept };
 }
 
 /** Plain-text rename map, one "old -> new" per line, for fixing \cite commands. */

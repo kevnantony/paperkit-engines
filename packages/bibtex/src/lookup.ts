@@ -144,7 +144,8 @@ export function parseArxivAtom(xml: string): ArxivRecord[] {
     const doi = tag("arxiv:doi");
     const journalRef = tag("arxiv:journal_ref");
     const fields: [string, string][] = [
-      ["author", authors.map(toLastFirst).join(" and ")],
+      // arXiv gives "First Last" names, which BibTeX parses correctly (von particles and Jr. included).
+      ["author", authors.map(bibtexName).join(" and ")],
       ["title", title],
       ["year", published.slice(0, 4)],
       ["eprint", id],
@@ -186,14 +187,16 @@ export async function fetchArxivViaDoi(id: string, fetchImpl: FetchLike, signal?
   return { ...entry, type: "misc", fields };
 }
 
-function toLastFirst(name: string): string {
-  const parts = name.trim().split(/\s+/);
-  if (parts.length < 2) return name;
-  return `${parts[parts.length - 1]}, ${parts.slice(0, -1).join(" ")}`;
+function bibtexName(name: string): string {
+  return name.trim().replace(/\s+/g, " ");
 }
 
+/** Escape BibTeX/LaTeX specials in plain text, leaving $…$ math and already-escaped characters alone. */
 function escapeTex(s: string): string {
-  return s.replace(/([&%#_])/g, "\\$1");
+  return s
+    .split(/(\$[^$]*\$)/)
+    .map((seg, i) => (i % 2 === 1 ? seg : seg.replace(/(?<!\\)([&%#_])/g, "\\$1")))
+    .join("");
 }
 
 function decodeXml(s: string): string {

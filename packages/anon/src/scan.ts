@@ -306,6 +306,34 @@ export function scanPdfMetadata(meta: PdfMetadata, identifiers: string[]): Findi
     if (hasLocalPath(f) || identifiers.some((id) => findIdentifier(f, id).length))
       add(out, { severity: "high", rule: "embedded-path", title: "Embedded figure records a local path", location: { kind: "metadata", field: "PTEX.FileName" }, snippet: f, hint });
   }
+  for (const author of meta.annotationAuthors ?? [])
+    add(out, {
+      severity: "high",
+      rule: "annotation-author",
+      title: "PDF annotation records its author",
+      location: { kind: "metadata", field: "Annotation /T" },
+      snippet: author,
+      hint: "Comments and highlights store who made them. Strip the metadata (keeps the annotations, drops author and dates) or flatten/remove the comments.",
+    });
+  const attachments = meta.attachments ?? [];
+  if (attachments.length)
+    add(out, {
+      severity: "high",
+      rule: "attachment",
+      title: `PDF has ${attachments.length} embedded attachment${attachments.length === 1 ? "" : "s"}`,
+      location: { kind: "metadata", field: "Attachments" },
+      snippet: attachments.map((a) => a.name).join(", "),
+      hint: "Attached files travel with the PDF and are easy to miss. Strip the metadata with “Remove attachments” on, or delete them in your PDF viewer.",
+    });
+  for (const link of meta.localLinks ?? [])
+    add(out, {
+      severity: "high",
+      rule: "local-link",
+      title: "Link points to a file on your computer",
+      location: { kind: "metadata", field: "Link target" },
+      snippet: link,
+      hint: "Local paths often contain your user name. Fix the \\href / hyperlink in the source and recompile.",
+    });
   for (const { field, value } of meta.embeddedInfo) {
     const path = hasLocalPath(value);
     if (field === "Author" || path)

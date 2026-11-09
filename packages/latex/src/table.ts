@@ -13,6 +13,8 @@ export interface ParsedTable {
   rows: string[][];
   /** Alignment hints from a Markdown separator row (`:--`, `:-:`, `--:`), if any. */
   alignHints?: (Align | null)[];
+  /** Field delimiter for CSV/TSV input (`,`, `;` or tab). A `;` delimiter implies decimal commas. */
+  delimiter?: string;
 }
 
 export interface LatexTableOptions {
@@ -152,8 +154,8 @@ export function parseTable(text: string, format: TableFormat | "auto" = "auto"):
     const { rows, alignHints } = parseMarkdown(text);
     return { format: fmt, rows: normalizeRows(rows), alignHints };
   }
-  const rows = parseDelimited(text, fmt === "tsv" ? "\t" : guessCsvDelimiter(text));
-  return { format: fmt, rows: normalizeRows(rows) };
+  const delimiter = fmt === "tsv" ? "\t" : guessCsvDelimiter(text);
+  return { format: fmt, rows: normalizeRows(parseDelimited(text, delimiter)), delimiter };
 }
 
 /* ---------------- numbers ---------------- */
@@ -175,14 +177,24 @@ export interface ParsedNumber {
   percent: boolean;
 }
 
-const NUM_RE = /^([+\-−]?)(\d{1,3}(?:,\d{3})+|\d*)(?:\.(\d+))?(?:[eE]([+\-]?\d+))?$/;
+export type DecimalMark = "." | ",";
 
-/** Parse a numeric cell like `85.3`, `-0.12`, `1,024`, `92.1%`, `85.3 ± 0.4`, `85.3 +- 0.4`. Returns null for text. */
-export function parseNumber(cell: string): ParsedNumber | null {
+/** Period decimal mark, comma thousands separators (`1,024.5`). */
+const NUM_RE = /^([+\-−]?)(\d{1,3}(?:,\d{3})+|\d*)(?:\.(\d+))?(?:[eE]([+\-]?\d+))?$/;
+/** Comma decimal mark (`0,912`); no thousands separators, so `1.234` is rejected rather than guessed. */
+const NUM_RE_COMMA = /^([+\-−]?)(\d*)(?:,(\d+))?(?:[eE]([+\-]?\d+))?$/;
+const PM_RE = /^(.*?)\s*(?:±|\+-|\+\/-|\\pm)\s*([0-9.]+)\s*(%?)$/;
+const PM_RE_COMMA = /^(.*?)\s*(?:±|\+-|\+\/-|\\pm)\s*([0-9,]+)\s*(%?)$/;
+
+/**
+ * Parse a numeric cell like `85.3`, `-0.12`, `1,024`, `92.1%`, `85.3 ± 0.4`, `85.3 +- 0.4`. Returns null for text.
+ * With `decimal = ","` the comma is the decimal mark (`0,912` → 0.912).
+ */
+export function parseNumber(cell: string, decimal: DecimalMark = "."): ParsedNumber | null {
   let s = cell.trim();
   if (!s) return null;
   let pm: string | undefined;
-  const pmMatch = s.match(/^(.*?)\s*(?:±|\+-|\+\/-|\\pm)\s*([0-9.]+)\s*(%?)$/);
+  const pmMatch = s.match(decimal === "," ? PM_RE_COMMA : PM_RE);
   if (pmMatch) {
     s = pmMatch[1] + pmMatch[3];
     pm = pmMatch[2];
@@ -192,7 +204,7 @@ export function parseNumber(cell: string): ParsedNumber | null {
     percent = true;
     s = s.slice(0, -1).trim();
   }
-  const m = s.match(NUM_RE);
+  const m = s.match(decimal === "," ? NUM_RE_COMMA : NUM_RE);
   if (!m) return null;
   const [, sign, intPart, dec, exp] = m;
   if (!intPart && !dec) return null;
@@ -211,16 +223,55 @@ export interface TableModel {
   columns: number;
   /** Column is numeric: every non-missing body cell parses as a number (and there is at least one). */
   numeric: boolean[];
+  /** Column uses a comma as its decimal mark (`0,912`). */
+  decimalComma: boolean[];
   aligns: Align[];
   /** best[r][c] — body cell is the best value of its column. */
   best: boolean[][];
 }
 
-export function buildModel(parsed: Pick<ParsedTable, "rows" | "alignHints">, opts: Pick<LatexTableOptions, "header" | "align" | "best">): TableModel {
+const COMMA_DECIMAL_CELL = /^[+\-−]?\d+,\d+$/;
+const THOUSANDS_CELL = /^[+\-−]?[1-9]\d{0,2}(?:,\d{3})+$/;
+
+/** Strip `± x` and `%` so only the number itself is inspected for its decimal mark. */
+function numberCore(cell: string): string {
+  return cell
+    .trim()
+    .replace(/\s*(?:±|\+-|\+\/-|\\pm)\s*[0-9.,]+\s*(%?)$/, "$1")
+    .replace(/%$/, "")
+    .trim();
+}
+
+/**
+ * Decide the decimal mark of one column. Comma when the column has commas but no periods and either
+ * the input was `;`-delimited (European spreadsheets) or every comma cell is `d,d` and at least one of
+ * them cannot be a thousands group (`0,912`, `1,5`). `1,024` / `2,048` stay thousands separators.
+ */
+export function detectDecimalMark(cells: string[], delimiter?: string): DecimalMark {
+  const cores = cells.filter((c) => !isMissing(c)).map(numberCore);
+  const withComma = cores.filter((c) => c.includes(","));
+  if (withComma.length === 0 || cores.some((c) => c.includes("."))) return ".";
+  if (delimiter === ";") return ",";
+  if (withComma.every((c) => COMMA_DECIMAL_CELL.test(c)) && withComma.some((c) => !THOUSANDS_CELL.test(c))) return ",";
+  return ".";
+}
+
+export function buildModel(
+  parsed: Pick<ParsedTable, "rows" | "alignHints" | "delimiter">,
+  opts: Pick<LatexTableOptions, "header" | "align" | "best">,
+): TableModel {
   const rows = parsed.rows;
   const header = opts.header && rows.length > 0 ? rows[0] : null;
   const body = opts.header ? rows.slice(1) : rows;
   const columns = rows[0]?.length ?? 0;
+
+  const marks: DecimalMark[] = Array.from({ length: columns }, (_, c) =>
+    detectDecimalMark(
+      body.map((r) => r[c] ?? ""),
+      parsed.delimiter,
+    ),
+  );
+  const decimalComma = marks.map((m) => m === ",");
 
   const numeric: boolean[] = [];
   for (let c = 0; c < columns; c++) {
@@ -229,7 +280,7 @@ export function buildModel(parsed: Pick<ParsedTable, "rows" | "alignHints">, opt
     for (const r of body) {
       const cell = r[c] ?? "";
       if (isMissing(cell)) continue;
-      if (parseNumber(cell)) count++;
+      if (parseNumber(cell, marks[c])) count++;
       else {
         ok = false;
         break;
@@ -251,19 +302,19 @@ export function buildModel(parsed: Pick<ParsedTable, "rows" | "alignHints">, opt
       if (!numeric[c]) continue;
       let target: number | null = null;
       for (const r of body) {
-        const n = parseNumber(r[c] ?? "");
+        const n = parseNumber(r[c] ?? "", marks[c]);
         if (!n) continue;
         if (target === null || (opts.best === "max" ? n.value > target : n.value < target)) target = n.value;
       }
       if (target === null) continue;
       body.forEach((r, ri) => {
-        const n = parseNumber(r[c] ?? "");
+        const n = parseNumber(r[c] ?? "", marks[c]);
         if (n && n.value === target) best[ri][c] = true;
       });
     }
   }
 
-  return { header, body, columns, numeric, aligns, best };
+  return { header, body, columns, numeric, decimalComma, aligns, best };
 }
 
 /* ---------------- LaTeX output ---------------- */
@@ -279,6 +330,9 @@ const ESCAPES: Record<string, string> = {
   "~": "\\textasciitilde{}",
   "^": "\\textasciicircum{}",
   "\\": "\\textbackslash{}",
+  // Under the default OT1 font encoding `<` and `>` typeset as ¡ and ¿ in text mode.
+  "<": "\\textless{}",
+  ">": "\\textgreater{}",
 };
 
 const UNICODE: Record<string, string> = {
@@ -295,17 +349,17 @@ const UNICODE: Record<string, string> = {
   "μ": "$\\mu$",
 };
 
-/** Escape LaTeX special characters: & % $ # _ { } ~ ^ \ (plus a few common Unicode math symbols). */
+/** Escape LaTeX special characters: & % $ # _ { } ~ ^ \ < > (plus a few common Unicode math symbols). */
 export function escapeLatex(s: string): string {
-  return s.replace(/[&%$#_{}~^\\±×≤≥−→↑↓°µμ]/g, (ch) => ESCAPES[ch] ?? UNICODE[ch] ?? ch);
+  return s.replace(/[&%$#_{}~^\\<>±×≤≥−→↑↓°µμ]/g, (ch) => ESCAPES[ch] ?? UNICODE[ch] ?? ch);
 }
 
-function siunitxFormat(body: string[][], c: number): string {
+function siunitxFormat(body: string[][], c: number, mark: DecimalMark): string {
   let int = 1;
   let dec = 0;
   let neg = false;
   for (const r of body) {
-    const n = parseNumber(r[c] ?? "");
+    const n = parseNumber(r[c] ?? "", mark);
     if (!n) continue;
     int = Math.max(int, n.intDigits);
     dec = Math.max(dec, n.decDigits);
@@ -315,18 +369,19 @@ function siunitxFormat(body: string[][], c: number): string {
 }
 
 /** S columns only for plain numbers: values with ± or % keep a normal column so nothing is silently dropped. */
-function siunitxEligible(body: string[][], c: number): boolean {
+function siunitxEligible(body: string[][], c: number, mark: DecimalMark): boolean {
   return body.every((r) => {
     const cell = r[c] ?? "";
     if (isMissing(cell)) return true;
-    const n = parseNumber(cell);
+    const n = parseNumber(cell, mark);
     return !!n && !n.pm && !n.percent && !/[eE]/.test(cell);
   });
 }
 
-/** Format a numeric cell for an S column: Unicode minus and thousands separators normalized. */
-function siunitxCell(cell: string): string {
-  return cell.trim().replace(/−/g, "-").replace(/,(?=\d{3})/g, "");
+/** Format a numeric cell for an S column: Unicode minus normalized, thousands separators dropped, decimal comma → period. */
+function siunitxCell(cell: string, mark: DecimalMark): string {
+  const s = cell.trim().replace(/−/g, "-");
+  return mark === "," ? s.replace(/,/g, ".") : s.replace(/,(?=\d{3})/g, "");
 }
 
 export interface LatexResult {
@@ -337,11 +392,12 @@ export interface LatexResult {
   sColumns: boolean[];
 }
 
-export function toLatex(parsed: Pick<ParsedTable, "rows" | "alignHints">, options: Partial<LatexTableOptions> = {}): LatexResult {
+export function toLatex(parsed: Pick<ParsedTable, "rows" | "alignHints" | "delimiter">, options: Partial<LatexTableOptions> = {}): LatexResult {
   const opts = { ...defaultTableOptions, ...options };
   const model = buildModel(parsed, opts);
-  const { header, body, columns, numeric, aligns, best } = model;
-  const sCols = numeric.map((isNum, c) => opts.siunitx && opts.align === "auto" && isNum && siunitxEligible(body, c));
+  const { header, body, columns, numeric, decimalComma, aligns, best } = model;
+  const mark = (c: number): DecimalMark => (decimalComma[c] ? "," : ".");
+  const sCols = numeric.map((isNum, c) => opts.siunitx && opts.align === "auto" && isNum && siunitxEligible(body, c, mark(c)));
   const isS = (c: number) => sCols[c];
   const esc = (s: string) => (opts.escape ? escapeLatex(s) : s);
 
@@ -350,7 +406,7 @@ export function toLatex(parsed: Pick<ParsedTable, "rows" | "alignHints">, option
   if (sCols.some(Boolean)) packages.push("siunitx");
   if (opts.resize) packages.push("graphicx");
 
-  const spec = aligns.map((a, c) => (isS(c) ? siunitxFormat(body, c) : a)).join(" ");
+  const spec = aligns.map((a, c) => (isS(c) ? siunitxFormat(body, c, mark(c)) : a)).join(" ");
 
   const fmtHeader = (cell: string, c: number) => {
     const text = esc(cell);
@@ -359,7 +415,7 @@ export function toLatex(parsed: Pick<ParsedTable, "rows" | "alignHints">, option
   const fmtBody = (cell: string, r: number, c: number) => {
     if (isS(c)) {
       if (isMissing(cell)) return cell === "" ? "" : `{${esc(cell)}}`;
-      const v = siunitxCell(cell);
+      const v = siunitxCell(cell, mark(c));
       return best[r][c] ? `\\bfseries ${v}` : v;
     }
     const text = esc(cell);

@@ -46,12 +46,24 @@ export interface BibComment {
   line: number;
 }
 
-export type BibItem = BibEntry | BibStringDef | BibPreamble | BibComment;
+/**
+ * A block the parser could not read (for example a missing comma between fields). Kept so tools can
+ * copy it to their output unchanged instead of silently dropping an entry; a ParseWarning explains why.
+ */
+export interface BibUnparsed {
+  kind: "unparsed";
+  /** Original source text, trimmed. */
+  raw: string;
+  message: string;
+  line: number;
+}
+
+export type BibItem = BibEntry | BibStringDef | BibPreamble | BibComment | BibUnparsed;
 
 export interface ParseWarning {
   line: number;
   message: string;
-  /** The skipped source chunk (trimmed, possibly truncated). */
+  /** The unreadable source chunk (trimmed, possibly truncated). It is kept verbatim as a BibUnparsed item. */
   raw: string;
 }
 

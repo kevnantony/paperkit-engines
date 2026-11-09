@@ -31,6 +31,8 @@ export function serializeItem(item: BibItem, opts: SerializeOptions = {}): strin
       return `@preamble{${serializeValue(item.value)}}`;
     case "comment":
       return item.explicit ? `@comment{${item.text}}` : item.text;
+    case "unparsed":
+      return item.raw;
   }
 }
 

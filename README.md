@@ -1,7 +1,6 @@
 # PaperKit engines
 
-The open-source processing engines behind **[PaperKit](https://paperkit.app)** — free research paper tools that run in your browser.
-<!-- TODO(lead): replace https://paperkit.app (here and in every packages/*/README.md) with the final PaperKit site URL. -->
+The open-source processing engines behind **[PaperKit](https://paperkit.pages.dev)** — free research paper tools that run in your browser.
 
 These packages parse BibTeX, count LaTeX words, convert tables, clean arXiv submissions, audit double-blind anonymity and check camera-ready PDFs. They are plain TypeScript with no DOM access at import time, so the same code runs in Node 18+ and in the browser. **Everything runs locally: nothing is uploaded, and no network request is made unless you pass a `fetch` function yourself** (DOI/arXiv lookup in `@paperkit/bibtex`).
 

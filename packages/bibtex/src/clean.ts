@@ -162,12 +162,15 @@ export function cleanItems(items: BibItem[], opts: CleanOptions, warnings: Parse
         e.key = key;
       }
     });
+    if (keyChanges.length) retargetKeyReferences(entries, keyChanges);
   }
   const entriesChanged = entries.filter((e, i) => fingerprint(e) !== fingerprint(originals[i])).length;
 
   let ordered = out;
   if (opts.sort !== "none") {
-    const head = out.filter((i) => i.kind !== "entry");
+    // Unreadable chunks go last: an unbalanced brace there cannot swallow the entries after it.
+    const head = out.filter((i) => i.kind !== "entry" && i.kind !== "unparsed");
+    const tail = out.filter((i) => i.kind === "unparsed");
     const sorted = [...entries].sort((a, b) => {
       if (opts.sort === "year") {
         const ya = yearOf(a, strings) || "9999";
@@ -176,7 +179,7 @@ export function cleanItems(items: BibItem[], opts: CleanOptions, warnings: Parse
       }
       return a.key.localeCompare(b.key, "en", { sensitivity: "base", numeric: true });
     });
-    ordered = [...head, ...sorted];
+    ordered = [...head, ...sorted, ...tail];
   }
 
   return {
@@ -185,6 +188,41 @@ export function cleanItems(items: BibItem[], opts: CleanOptions, warnings: Parse
     keyChanges,
     entries,
   };
+}
+
+/** Fields whose value is a citation key, or a comma-separated list of keys. */
+const KEY_REFERENCE_FIELDS = new Set(["crossref", "xdata", "related"]);
+
+/**
+ * After keys are rewritten, point crossref / xdata / related at the new keys. When an old key was used
+ * by several entries, the first one wins (BibTeX itself resolves duplicates to the first entry too).
+ */
+function retargetKeyReferences(entries: BibEntry[], changes: { from: string; to: string }[]): void {
+  const exact = new Map<string, string>();
+  const folded = new Map<string, string>();
+  for (const c of changes) {
+    if (!exact.has(c.from)) exact.set(c.from, c.to);
+    if (!folded.has(c.from.toLowerCase())) folded.set(c.from.toLowerCase(), c.to);
+  }
+  const renamed = new Set(changes.map((c) => c.from));
+  const stillUsed = new Set(entries.map((e) => e.key));
+  const map = (k: string) => {
+    // A key that some entry still has (after rewriting) already points at the right place.
+    if (!renamed.has(k) && stillUsed.has(k)) return k;
+    return exact.get(k) ?? folded.get(k.toLowerCase()) ?? k;
+  };
+  for (const e of entries) {
+    for (const f of e.fields) {
+      if (!KEY_REFERENCE_FIELDS.has(f.name)) continue;
+      for (const p of f.value) {
+        if (p.type !== "literal") continue;
+        p.value = p.value
+          .split(/(\s*,\s*)/)
+          .map((tok, i) => (i % 2 === 1 || !tok.trim() ? tok : tok.replace(/^(\s*)(.*?)(\s*)$/, (_, a: string, k: string, b: string) => a + map(k) + b)))
+          .join("");
+      }
+    }
+  }
 }
 
 function suffix(n: number): string {

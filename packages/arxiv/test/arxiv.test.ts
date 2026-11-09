@@ -331,3 +331,92 @@ describe("cleanProject on the fixture zip (golden)", async () => {
     expect(await (await JSZip.loadAsync(r.output)).file("main.tex")!.async("string")).toBe("\\documentclass{article}\nCafé naïve — ü %\n");
   });
 });
+
+describe("tracing non-.tex includes (regression)", () => {
+  const build = async (files: Record<string, string | Uint8Array>) => {
+    const z = new JSZip();
+    for (const [p, c] of Object.entries(files)) z.file(p, c);
+    return loadProjectZip(await z.generateAsync({ type: "uint8array" }));
+  };
+  const outNames = async (r: { output: Uint8Array }) => Object.keys((await JSZip.loadAsync(r.output)).files).filter((n) => !n.endsWith("/")).sort();
+  const pdfBytes = new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d, 0x31, 0x2e, 0x34, 0x0a, 0x00, 0x01]);
+
+  it("keeps a pgfplots table read from an \\input .tikz file", async () => {
+    const p = await build({
+      "main.tex": "\\documentclass{article}\\usepackage{pgfplots}\\begin{document}\\input{plot.tikz}\\end{document}",
+      "plot.tikz": "\\begin{tikzpicture}\\begin{axis}\n\\addplot+[mark=none] table [x=a, y=b] {results.csv};\n\\addplot table{data/more.dat};\n\\end{axis}\\end{tikzpicture}",
+      "results.csv": "a,b\n1,2\n",
+      "data/more.dat": "1 2\n",
+    });
+    const r = await cleanProject(p, { ...defaultCleanOptions, removeUnreferenced: true });
+    expect(r.plan.entries.find((e) => e.path === "results.csv")!.action).toBe("keep");
+    expect(r.plan.entries.find((e) => e.path === "data/more.dat")!.action).toBe("keep");
+    expect(await outNames(r)).toEqual(["data/more.dat", "main.tex", "plot.tikz", "results.csv"]);
+  });
+
+  it("keeps the PDF behind an Inkscape .pdf_tex (direct \\input and \\import)", async () => {
+    const pdfTex = (name: string) => `\\begingroup\\begin{picture}(1,1)\\put(0,0){\\includegraphics[width=\\unitlength,page=1]{${name}.pdf}}\\end{picture}\\endgroup`;
+    const p = await build({
+      "main.tex": "\\documentclass{article}\\usepackage{import}\\begin{document}\\input{fig.pdf_tex}\\import{figs/}{other.pdf_tex}\\end{document}",
+      "fig.pdf_tex": pdfTex("fig"),
+      "fig.pdf": pdfBytes,
+      "figs/other.pdf_tex": pdfTex("other"),
+      "figs/other.pdf": pdfBytes,
+      "unused.pdf": pdfBytes,
+    });
+    const r = await cleanProject(p);
+    const act = (x: string) => r.plan.entries.find((e) => e.path === x)!.action;
+    expect(act("fig.pdf_tex")).toBe("keep");
+    expect(act("fig.pdf")).toBe("keep");
+    expect(act("figs/other.pdf_tex")).toBe("keep");
+    expect(act("figs/other.pdf")).toBe("keep");
+    expect(act("unused.pdf")).toBe("remove");
+  });
+
+  it("keeps a figure whose name is only mentioned as name.pdf_tex (untraceable text)", () => {
+    const plan = planCleanup(
+      [
+        { path: "main.tex", size: 1 },
+        { path: "fig.pdf", size: 1 },
+      ],
+      { "main.tex": "\\documentclass{article}\\begin{document}\\input{fig.pdf_tex}\\end{document}" },
+    );
+    expect(plan.entries.find((e) => e.path === "fig.pdf")!.action).toBe("keep");
+  });
+
+  it("resolves listings, verbatim, svg, pdf pages and bib resources from traced non-.tex files", async () => {
+    const p = await build({
+      "main.tex": "\\documentclass{article}\\usepackage{local}\\begin{document}\\input{body.inc}\\end{document}",
+      "local.sty": "\\ProvidesPackage{local}\\addbibresource{refs.bib}",
+      "body.inc": "\\lstinputlisting{code/a.py}\\verbatiminput{log.out.txt}\\includesvg{diagram}\\includepdf[pages=-]{appendix}",
+      "code/a.py": "print(1)\n",
+      "log.out.txt": "x\n",
+      "diagram.svg": "<svg/>",
+      "svg-inkscape/diagram_svg-tex.pdf": pdfBytes,
+      "svg-inkscape/diagram_svg-tex.pdf_tex": "\\includegraphics{diagram_svg-tex.pdf}",
+      "appendix.pdf": pdfBytes,
+      "refs.bib": "@misc{a}",
+    });
+    const r = await cleanProject(p, { ...defaultCleanOptions, keepBib: true, removeUnreferenced: true });
+    for (const f of ["body.inc", "code/a.py", "log.out.txt", "diagram.svg", "svg-inkscape/diagram_svg-tex.pdf", "svg-inkscape/diagram_svg-tex.pdf_tex", "appendix.pdf", "refs.bib", "local.sty"])
+      expect(r.plan.entries.find((e) => e.path === f)!.action, f).toBe("keep");
+  });
+
+  it("keeps unreferenced files of unknown type by default, removes them only when asked", () => {
+    const files = ["main.tex", "notes.json", "table.dat", "weird.xyz", "extra.csv", "fig.png", "main.aux"].map((path) => ({ path, size: 1 }));
+    const texts = { "main.tex": "\\documentclass{article}\\begin{document}x\\end{document}" };
+    const plan = planCleanup(files, texts);
+    const entry = (x: string) => plan.entries.find((e) => e.path === x)!;
+    for (const f of ["notes.json", "table.dat", "weird.xyz", "extra.csv"]) {
+      expect(entry(f).action, f).toBe("keep");
+      expect(entry(f).reason, f).toMatch(/kept: unknown type/);
+    }
+    expect(entry("fig.png").action).toBe("remove");
+    expect(entry("main.aux").action).toBe("remove");
+    expect(plan.warnings.some((w) => w.code === "unknown-kept" && /4 files/.test(w.message))).toBe(true);
+
+    const opt = planCleanup(files, texts, { ...defaultCleanOptions, removeUnreferenced: true });
+    for (const f of ["notes.json", "table.dat", "weird.xyz", "extra.csv"]) expect(opt.entries.find((e) => e.path === f)!.action, f).toBe("remove");
+    expect(opt.warnings.some((w) => w.code === "unknown-kept")).toBe(false);
+  });
+});

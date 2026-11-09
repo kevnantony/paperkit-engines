@@ -3,7 +3,9 @@
  *
  * Strip removes: the Info dictionary (optionally keeping Title), XMP /Metadata streams on every object,
  * /PieceInfo (Illustrator/Acrobat private data), pdfTeX's /PTEX.FileName and /PTEX.InfoDict on embedded
- * figures, and then garbage-collects every object no longer reachable, so old values don't survive as orphans.
+ * figures, the author (/T), dates (/M, /CreationDate), rich text (/RC) and subject (/Subj) of every annotation
+ * (the annotations themselves stay), embedded files (/Names /EmbeddedFiles, /AF and FileAttachment annotations),
+ * and then garbage-collects every object no longer reachable, so old values don't survive as orphans.
  */
 import {
   decodePDFRawStream,
@@ -37,6 +39,14 @@ export interface PdfMetadata {
   embeddedFileNames: string[];
   /** Author/Creator values from embedded figures' /PTEX.InfoDict. */
   embeddedInfo: { field: string; value: string }[];
+  /** Distinct /T (author) values of annotations (comments, highlights, popups). Form fields are excluded. */
+  annotationAuthors: string[];
+  /** Number of annotations carrying an author, date, rich text or subject entry. */
+  annotationMarkup: number;
+  /** Embedded files: document-level (/EmbeddedFiles) and FileAttachment annotations. */
+  attachments: { name: string; source: "document" | "annotation" }[];
+  /** Link targets pointing at the local file system (file://, /Users/…, C:\…). */
+  localLinks: string[];
   pageCount: number;
   encrypted: boolean;
 }
@@ -98,6 +108,91 @@ function* allDicts(doc: PDFDocument): Generator<PDFDict> {
   }
 }
 
+const ANNOT_PRIVATE_KEYS = ["T", "M", "CreationDate", "RC", "Subj"];
+
+const nameOf = (o: PDFObject | undefined) => (o instanceof PDFName ? o.decodeText() : null);
+
+/** Every annotation dict on every page, plus their popups. */
+function annotations(doc: PDFDocument): PDFDict[] {
+  const out = new Set<PDFDict>();
+  for (const page of doc.getPages()) {
+    const annots = safe(() => page.node.lookup(N("Annots")));
+    if (!(annots instanceof PDFArray)) continue;
+    for (const ref of annots.asArray()) {
+      const a = safe(() => doc.context.lookup(ref));
+      if (!(a instanceof PDFDict)) continue;
+      out.add(a);
+      const popup = safe(() => a.lookup(N("Popup")));
+      if (popup instanceof PDFDict) out.add(popup);
+    }
+  }
+  return [...out];
+}
+
+const isWidget = (a: PDFDict) => nameOf(a.get(N("Subtype"))) === "Widget";
+
+/** File name of a file specification (string or dictionary). */
+function fileSpecName(spec: PDFObject | undefined): string | null {
+  const direct = decodeText(spec);
+  if (direct && !(spec instanceof PDFName)) return direct;
+  if (spec instanceof PDFDict) for (const k of ["UF", "F", "Unix", "DOS", "Mac"]) {
+    const v = decodeText(spec.lookup(N(k)));
+    if (v) return v;
+  }
+  return null;
+}
+
+/** [key, value] pairs of a PDF name tree. */
+function nameTreeEntries(node: PDFDict, out: [string, PDFObject][] = [], depth = 0): [string, PDFObject][] {
+  if (depth > 32) return out;
+  const names = node.lookup(N("Names"));
+  if (names instanceof PDFArray) {
+    const arr = names.asArray();
+    for (let i = 0; i + 1 < arr.length; i += 2) {
+      const value = node.context.lookup(arr[i + 1]);
+      if (value) out.push([decodeText(arr[i]) ?? "", value]);
+    }
+  }
+  const kids = node.lookup(N("Kids"));
+  if (kids instanceof PDFArray) for (const k of kids.asArray()) {
+    const kid = node.context.lookup(k);
+    if (kid instanceof PDFDict) nameTreeEntries(kid, out, depth + 1);
+  }
+  return out;
+}
+
+const LOCAL_TARGET_RE = /^(?:file:|\/|~\/|[A-Za-z]:[\\/]|\\\\)/i;
+const isLocalTarget = (t: string) => LOCAL_TARGET_RE.test(t.trim()) || new RegExp(LOCAL_PATH_RE.source).test(t);
+
+function readAnnotationLeaks(doc: PDFDocument) {
+  const authors: string[] = [];
+  let markup = 0;
+  const attachments: PdfMetadata["attachments"] = [];
+  const localLinks: string[] = [];
+
+  const names = safe(() => doc.catalog.lookup(N("Names")));
+  const embedded = names instanceof PDFDict ? safe(() => names.lookup(N("EmbeddedFiles"))) : null;
+  if (embedded instanceof PDFDict)
+    for (const [key, spec] of nameTreeEntries(embedded)) attachments.push({ name: fileSpecName(spec) ?? (key || "unnamed"), source: "document" });
+
+  for (const a of annotations(doc)) {
+    const subtype = nameOf(a.get(N("Subtype")));
+    if (subtype !== "Widget") {
+      const author = decodeText(a.lookup(N("T")));
+      if (author && author.trim()) authors.push(author.trim());
+      if (ANNOT_PRIVATE_KEYS.some((k) => a.has(N(k)))) markup++;
+    }
+    if (subtype === "FileAttachment") attachments.push({ name: fileSpecName(a.lookup(N("FS"))) ?? "unnamed", source: "annotation" });
+    const action = safe(() => a.lookup(N("A")));
+    if (action instanceof PDFDict) {
+      const kind = nameOf(action.get(N("S")));
+      const target = kind === "URI" ? decodeText(action.lookup(N("URI"))) : kind === "Launch" || kind === "GoToR" ? fileSpecName(action.lookup(N("F"))) : null;
+      if (target && isLocalTarget(target)) localLinks.push(target);
+    }
+  }
+  return { annotationAuthors: [...new Set(authors)], annotationMarkup: markup, attachments, localLinks: [...new Set(localLinks)] };
+}
+
 const isXmpStream = (doc: PDFDocument, v: PDFObject | undefined) => {
   const s = v instanceof PDFRef ? doc.context.lookup(v) : v;
   return s instanceof PDFStream;
@@ -134,6 +229,8 @@ export async function readPdfMetadata(bytes: Uint8Array | ArrayBuffer): Promise<
     }
   }
 
+  const leaks = encrypted ? { annotationAuthors: [], annotationMarkup: 0, attachments: [], localLinks: [] } : readAnnotationLeaks(doc);
+
   return {
     title: str(() => doc.getTitle()),
     author: str(() => doc.getAuthor()),
@@ -148,6 +245,7 @@ export async function readPdfMetadata(bytes: Uint8Array | ArrayBuffer): Promise<
     hasPieceInfo,
     embeddedFileNames: [...new Set(embeddedFileNames)],
     embeddedInfo,
+    ...leaks,
     pageCount: doc.getPageCount(),
     encrypted,
   };
@@ -156,6 +254,8 @@ export async function readPdfMetadata(bytes: Uint8Array | ArrayBuffer): Promise<
 export interface StripOptions {
   /** Keep the document Title (useful: it shows in the browser tab and on OpenReview). */
   keepTitle: boolean;
+  /** Remove embedded files (document attachments and FileAttachment annotations). Default true. */
+  removeAttachments?: boolean;
 }
 
 /** Delete every indirect object not reachable from the trailer (Root / Info). */
@@ -192,9 +292,45 @@ export async function stripPdfMetadata(bytes: Uint8Array | ArrayBuffer, opts: St
   if (title) info.set(N("Title"), PDFHexString.fromText(title));
   ctx.trailerInfo.Info = ctx.register(info);
 
+  const removeAttachments = opts.removeAttachments ?? true;
+
+  if (removeAttachments) {
+    const names = doc.catalog.lookup(N("Names"));
+    if (names instanceof PDFDict) {
+      names.delete(N("EmbeddedFiles"));
+      if (names.keys().length === 0) doc.catalog.delete(N("Names"));
+    }
+    doc.catalog.delete(N("Collection"));
+    // Drop FileAttachment annotations (and their popups) from every page.
+    for (const page of doc.getPages()) {
+      const annots = page.node.lookup(N("Annots"));
+      if (!(annots instanceof PDFArray)) continue;
+      const dropped = new Set<PDFDict>();
+      for (const ref of annots.asArray()) {
+        const a = ctx.lookup(ref);
+        if (a instanceof PDFDict && nameOf(a.get(N("Subtype"))) === "FileAttachment") dropped.add(a);
+      }
+      if (!dropped.size) continue;
+      const kept = annots.asArray().filter((ref) => {
+        const a = ctx.lookup(ref);
+        if (!(a instanceof PDFDict)) return true;
+        if (dropped.has(a)) return false;
+        const parent = a.lookup(N("Parent"));
+        return !(nameOf(a.get(N("Subtype"))) === "Popup" && parent instanceof PDFDict && dropped.has(parent));
+      });
+      // Belt and braces: if something else (e.g. the structure tree) still points at it, it carries no file.
+      for (const a of dropped) for (const k of ["FS", "Contents", "Popup", ...ANNOT_PRIVATE_KEYS]) a.delete(N(k));
+      page.node.set(N("Annots"), ctx.obj(kept));
+    }
+  }
+
+  // Annotation author, dates, rich text and subject. Form-field widgets keep /T (it is the field name).
+  for (const a of annotations(doc)) for (const k of isWidget(a) ? ["M"] : ANNOT_PRIVATE_KEYS) a.delete(N(k));
+
+  const privateKeys = ["Metadata", "PieceInfo", "PTEX.FileName", "PTEX.InfoDict", "LastModified", ...(removeAttachments ? ["AF"] : [])];
   for (const dict of [...allDicts(doc)]) {
     if (dict === info) continue;
-    for (const key of ["Metadata", "PieceInfo", "PTEX.FileName", "PTEX.InfoDict", "LastModified"]) dict.delete(N(key));
+    for (const key of privateKeys) dict.delete(N(key));
   }
   // Viewer preference asking to show the Title in the window bar is fine to keep.
   collectGarbage(doc);

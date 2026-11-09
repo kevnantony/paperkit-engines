@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import { entriesOf, getField, parseBibtex } from "../src";
+import { entriesOf, getField, normalizeNameList, parseBibtex } from "../src";
 import {
   combine,
   fetchDoi,
@@ -74,7 +74,7 @@ describe("network lookups (mocked fetch)", () => {
     expect(recs.map((r) => r.id)).toEqual(["1706.03762", "1810.04805"]);
     const e = recs[0].entry;
     expect(getField(e, "title")).toBe("Attention Is All You Need");
-    expect(getField(e, "author")).toMatch(/^Vaswani, Ashish and Shazeer, Noam/);
+    expect(getField(e, "author")).toMatch(/^Ashish Vaswani and Noam Shazeer and /);
     expect(getField(e, "year")).toBe("2017");
     expect(getField(e, "eprint")).toBe("1706.03762");
     expect(getField(e, "primaryclass")).toBe("cs.CL");
@@ -153,5 +153,24 @@ describe("network lookups (mocked fetch)", () => {
     for (const [url] of fetch.mock.calls) {
       expect(url).toMatch(/^https:\/\/(doi\.org\/10\.|export\.arxiv\.org\/api\/query\?id_list=)/);
     }
+  });
+});
+
+describe("arXiv Atom edge cases", () => {
+  const atom = (title: string, names: string[]) =>
+    `<feed><entry><id>http://arxiv.org/abs/2001.00001v1</id><published>2020-01-01T00:00:00Z</published><title>${title}</title>${names
+      .map((n) => `<author><name>${n}</name></author>`)
+      .join("")}</entry></feed>`;
+
+  it("does not escape inside math, but still escapes text specials", () => {
+    const [r] = parseArxivAtom(atom("Sparse $\\ell_1$ recovery for 100% of A&amp;B_c", ["Ann Lee"]));
+    expect(getField(r.entry, "title")).toBe("Sparse $\\ell_1$ recovery for 100\\% of A\\&B\\_c");
+  });
+
+  it("emits names BibTeX can parse, keeping von particles and suffixes", () => {
+    const [r] = parseArxivAtom(atom("T", ["Jean-Pierre van der Berg", "John Smith Jr.", "Plato"]));
+    const authors = getField(r.entry, "author")!;
+    expect(authors).toBe("Jean-Pierre van der Berg and John Smith Jr. and Plato");
+    expect(normalizeNameList(authors)).toBe("van der Berg, Jean-Pierre and Smith, Jr., John and Plato");
   });
 });

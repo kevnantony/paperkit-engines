@@ -5,7 +5,7 @@
 import JSZip from "jszip";
 import { stripComments } from "./comments";
 import { extname, normalizePath } from "./paths";
-import { defaultCleanOptions, planCleanup, TEXT_EXTS, type CleanOptions, type CleanPlan, type PlanEntry } from "./plan";
+import { BINARY_EXTS, defaultCleanOptions, looksLikeText, planCleanup, TEXT_EXTS, type CleanOptions, type CleanPlan, type PlanEntry } from "./plan";
 
 /** Byte-preserving decode: every byte becomes one char (so UTF-8 and Latin-1 sources both round-trip). */
 export function bytesToBinaryString(bytes: Uint8Array): string {
@@ -36,7 +36,8 @@ export async function loadProjectZip(zipBytes: Uint8Array | ArrayBuffer): Promis
     if (!path) continue;
     const bytes = await entry.async("uint8array");
     files.push({ path, bytes });
-    if (TEXT_EXTS.includes(extname(path))) texts[path] = bytesToBinaryString(bytes);
+    const ext = extname(path);
+    if (TEXT_EXTS.includes(ext) || (!BINARY_EXTS.includes(ext) && looksLikeText(bytes))) texts[path] = bytesToBinaryString(bytes);
   }
   files.sort((a, b) => a.path.localeCompare(b.path));
   return { files, texts, zipSize: zipBytes.byteLength };

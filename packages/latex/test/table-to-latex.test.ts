@@ -179,3 +179,61 @@ describe("LaTeX output", () => {
     expect(toLatex(md).latex).toContain("{c l}");
   });
 });
+
+describe("decimal commas", () => {
+  const semi = parseTable("Model;Acc\nA;0,912\nB;0,875\n");
+
+  it("records the CSV delimiter", () => expect(semi.delimiter).toBe(";"));
+
+  it("treats commas as the decimal mark in semicolon CSV", () => {
+    const m = buildModel(semi, { header: true, align: "auto", best: "max" });
+    expect(m.numeric).toEqual([false, true]);
+    expect(m.decimalComma).toEqual([false, true]);
+    expect(m.best).toEqual([
+      [false, true],
+      [false, false],
+    ]);
+  });
+
+  it("emits periods and a correct table-format in siunitx mode", () => {
+    const { latex } = toLatex(semi, { siunitx: true, best: "max" });
+    expect(latex).toContain("S[table-format=1.3]");
+    expect(latex).toContain("\\bfseries 0.912");
+    expect(latex).toMatch(/0\.875 \\\\/);
+    expect(latex).not.toContain("0912");
+  });
+
+  it("keeps cells as written without siunitx but compares numerically", () => {
+    const { latex } = toLatex(parseTable("M;Loss\nA;1,5\nB;0,25\nC;10"), { best: "min" });
+    expect(latex).toContain("\\textbf{0,25}");
+    expect(latex).toContain("1,5");
+  });
+
+  it("detects decimal commas in a TSV column of d,d values", () => {
+    const t = parseTable("M\tAcc\nA\t0,912\nB\t0,875");
+    const m = buildModel(t, { header: true, align: "auto", best: "max" });
+    expect(m.decimalComma).toEqual([false, true]);
+    expect(m.best[0][1]).toBe(true);
+    expect(toLatex(t, { siunitx: true }).latex).toContain("S[table-format=1.3]");
+  });
+
+  it("still reads 1,024 / 2,048 in a TSV column as thousands", () => {
+    const t = parseTable("M\tN\nA\t1,024\nB\t2,048");
+    const m = buildModel(t, { header: true, align: "auto", best: "max" });
+    expect(m.decimalComma).toEqual([false, false]);
+    expect(toLatex(t, { siunitx: true }).latex).toContain("S[table-format=4.0]");
+  });
+
+  it("parses comma-decimal numbers with an explicit mark", () => {
+    expect(parseNumber("0,912", ",")).toMatchObject({ value: 0.912, intDigits: 1, decDigits: 3 });
+    expect(parseNumber("-1,5 ± 0,2", ",")).toMatchObject({ value: -1.5, pm: "0,2" });
+    expect(parseNumber("1.2", ",")).toBeNull();
+  });
+});
+
+describe("angle brackets", () => {
+  it("escapes < and > in text cells", () => {
+    expect(escapeLatex("p<0.05, q>1")).toBe("p\\textless{}0.05, q\\textgreater{}1");
+    expect(toLatex(parseTable("Test,p\nA,<0.05")).latex).toContain("\\textless{}0.05");
+  });
+});

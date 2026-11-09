@@ -19,7 +19,15 @@ describe("findDuplicates", () => {
     expect(groups).toEqual([
       { keys: ["devlin2018bert", "devlin2019bert"], reasons: ["arxiv-published"] },
       { keys: ["krizhevsky2017imagenet", "Krizhevsky_2017"], reasons: ["doi", "same-title"] },
-      { keys: ["he2016deep", "he2016resnet", "he2016deep"], reasons: ["same-title", "same-key"] },
+      { keys: ["he2016deep", "he2016resnet"], reasons: ["same-title"] },
+      // Same key, different papers: its own group, never merged by default.
+      { keys: ["he2016deep", "he2016deep"], reasons: ["same-key"] },
+    ]);
+    expect(r.groups.map((g) => [g.kind, g.defaultChoice === "all"])).toEqual([
+      ["duplicates", false],
+      ["duplicates", false],
+      ["duplicates", false],
+      ["same-key", true],
     ]);
   });
 
@@ -88,8 +96,8 @@ describe("mergeDuplicates", () => {
   it("keeps the default choice and produces a rename map", () => {
     const r = findDuplicates(files());
     const m = mergeDuplicates(r, {});
-    expect(m.removed).toBe(4);
-    expect(m.kept).toBe(4);
+    expect(m.removed).toBe(3);
+    expect(m.kept).toBe(5);
     expect(m.renames).toEqual([
       { from: "devlin2018bert", to: "devlin2019bert" },
       { from: "krizhevsky2017imagenet", to: "Krizhevsky_2017" },
@@ -97,7 +105,8 @@ describe("mergeDuplicates", () => {
     ]);
     expect(renameMapText(m.renames)).toBe("devlin2018bert -> devlin2019bert\nkrizhevsky2017imagenet -> Krizhevsky_2017\nhe2016deep -> he2016resnet");
     const keys = entriesOf(parseBibtex(m.output)).map((e) => e.key);
-    expect(keys).toEqual(["devlin2019bert", "Krizhevsky_2017", "he2016resnet", "lecun2015deep"]);
+    expect(keys).toEqual(["devlin2019bert", "Krizhevsky_2017", "he2016resnet", "he2016deep", "lecun2015deep"]);
+    expect(m.output).toContain("Identity mappings in deep residual networks");
   });
 
   it("honours user choices, including keeping every member", () => {
@@ -105,7 +114,7 @@ describe("mergeDuplicates", () => {
     const [bert, alex, he] = r.groups;
     const m = mergeDuplicates(r, { [bert.id]: bert.members[0].id, [alex.id]: "all", [he.id]: he.members[0].id });
     const keys = entriesOf(parseBibtex(m.output)).map((e) => e.key);
-    expect(keys).toEqual(["devlin2018bert", "krizhevsky2017imagenet", "he2016deep", "Krizhevsky_2017", "lecun2015deep"]);
+    expect(keys).toEqual(["devlin2018bert", "krizhevsky2017imagenet", "he2016deep", "Krizhevsky_2017", "he2016deep", "lecun2015deep"]);
     expect(m.renames).toEqual([
       { from: "devlin2019bert", to: "devlin2018bert" },
       { from: "he2016resnet", to: "he2016deep" },
@@ -124,5 +133,101 @@ describe("mergeDuplicates", () => {
     const r = findDuplicates([{ name: "x", text: "" }]);
     expect(r.groups).toEqual([]);
     expect(mergeDuplicates(r, {}).output).toBe("");
+  });
+});
+
+describe("findDuplicates never drops distinct papers by default", () => {
+  const keysIn = (r: ReturnType<typeof findDuplicates>) => entriesOf(parseBibtex(mergeDuplicates(r, {}).output)).map((e) => e.key);
+
+  it("does not group numbered parts of a series published in different years", () => {
+    const r = findDuplicates([
+      {
+        name: "x",
+        text:
+          "@article{p1, title={Deep learning for protein folding: Part I}, year={2019}}\n" +
+          "@article{p2, title={Deep learning for protein folding: Part II}, year={2020}}",
+      },
+    ]);
+    expect(r.groups).toEqual([]);
+    expect(keysIn(r)).toEqual(["p1", "p2"]);
+  });
+
+  it("does not group titles that differ only in a numeral, part or volume", () => {
+    const pairs = [
+      ["Proceedings of the Conference on Robot Learning 2019", "Proceedings of the Conference on Robot Learning 2020"],
+      ["Deep learning for protein folding: Part I", "Deep learning for protein folding: Part II"],
+      ["Handbook of statistical methods, Volume A", "Handbook of statistical methods, Volume B"],
+      ["The art of computer programming, vol. 3", "The art of computer programming, vol. 4"],
+    ];
+    for (const [a, b] of pairs) {
+      const r = findDuplicates([{ name: "x", text: `@misc{a, title={${a}}}\n@misc{b, title={${b}}}` }]);
+      expect(r.groups, `${a} / ${b}`).toEqual([]);
+    }
+  });
+
+  it("does not group identical titles whose years differ, except arXiv vs published within a year", () => {
+    const same = (y1: string, y2: string, arxivFirst = false) =>
+      findDuplicates([
+        {
+          name: "x",
+          text:
+            `@article{a, title={Attention mechanisms in sequence models}, year={${y1}}${arxivFirst ? ", journal={arXiv preprint arXiv:1234.5678}" : ""}}\n` +
+            `@inproceedings{b, title={Attention mechanisms in sequence models}, year={${y2}}, booktitle={ICML}}`,
+        },
+      ]).groups;
+    expect(same("2019", "2020")).toEqual([]);
+    expect(same("2019", "2019")).toHaveLength(1);
+    expect(same("2019", "")).toHaveLength(1);
+    expect(same("2019", "2020", true).map((g) => g.reasons)).toEqual([["arxiv-published"]]);
+    expect(same("2017", "2020", true)).toEqual([]);
+  });
+
+  it("keeps shared keys apart from title groups and defaults them to keep all", () => {
+    const r = findDuplicates([
+      { name: "a.bib", text: "@article{smith2020, title={Graph neural networks for chemistry}, year={2020}}" },
+      {
+        name: "b.bib",
+        text:
+          "@article{smith2020, title={Reinforcement learning for robot control}, year={2020}, journal={JMLR}}\n" +
+          "@article{rl2, title={Reinforcement learning for robot control}, year={2020}, journal={JMLR}, volume={21}}",
+      },
+    ]);
+    const shape = r.groups.map((g) => ({ kind: g.kind, keys: g.members.map((m) => `${m.source}:${m.entry.key}`), reasons: g.reasons, def: g.defaultChoice }));
+    expect(shape).toEqual([
+      { kind: "same-key", keys: ["a.bib:smith2020", "b.bib:smith2020"], reasons: ["same-key"], def: "all" },
+      { kind: "duplicates", keys: ["b.bib:smith2020", "b.bib:rl2"], reasons: ["same-title"], def: 2 },
+    ]);
+    const out = mergeDuplicates(r, {}).output;
+    expect(out).toContain("Graph neural networks for chemistry");
+    expect(out).toContain("@article{rl2,");
+    expect(keysIn(r)).toEqual(["smith2020", "rl2"]);
+  });
+
+  it("does not report a shared key separately when the entries are already grouped as duplicates", () => {
+    const r = findDuplicates([
+      { name: "a.bib", text: "@article{x1, title={Same paper}, doi={10.1234/abc}}" },
+      { name: "b.bib", text: "@article{x1, title={Same paper}, doi={10.1234/abc}, pages={1--2}}" },
+    ]);
+    expect(r.groups.map((g) => [g.kind, g.reasons])).toEqual([["duplicates", ["doi", "same-title"]]]);
+  });
+
+  it("never drops an entry the user explicitly kept in an overlapping group", () => {
+    const r = findDuplicates(files());
+    const key = r.groups.find((g) => g.kind === "same-key")!;
+    const title = r.groups.find((g) => g.members.some((m) => m.entry.key === "he2016resnet"))!;
+    const a = key.members[0].id; // he2016deep from a.bib, also in the title group with he2016resnet
+    const m = mergeDuplicates(r, { [key.id]: a, [title.id]: title.members.find((x) => x.entry.key === "he2016resnet")!.id });
+    const titles = entriesOf(parseBibtex(m.output)).map((e) => getField(e, "title"));
+    expect(titles).toContain("Deep residual learning for image recognition");
+    expect(titles).not.toContain("Identity mappings in deep residual networks");
+  });
+});
+
+describe("mergeDuplicates keeps entries the parser could not read", () => {
+  it("copies unparseable chunks through unchanged, in their original position", () => {
+    const text = "@misc{a, title={Alpha}}\n\n@misc{bad, title={Beta}\n  author={Doe, Jane}}\n\n@misc{c, title={Gamma}}\n";
+    const r = findDuplicates([{ name: "x", text }]);
+    expect(r.warnings).toHaveLength(1);
+    expect(mergeDuplicates(r, {}).output).toBe(text);
   });
 });

@@ -39,7 +39,7 @@ console.log(reachedTarget, quality.toFixed(2)); // true 0.50
 
 ## Part of PaperKit
 
-This package is one of the open-source engines behind **[PaperKit](https://paperkit.app)** <!-- TODO(lead): replace https://paperkit.app with the final PaperKit site URL --> — free research paper tools that run in your browser. Everything runs locally: no uploads, no server round-trips.
+This package is one of the open-source engines behind **[PaperKit](https://paperkit.pages.dev)** — free research paper tools that run in your browser. Everything runs locally: no uploads, no server round-trips.
 
 Source, issues and the other engines: [kevnantony/paperkit-engines](https://github.com/kevnantony/paperkit-engines).
 
