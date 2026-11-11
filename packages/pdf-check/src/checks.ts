@@ -126,7 +126,12 @@ export function checkPageSize(facts: PdfFacts, opts: Pick<CheckOptions, "expecte
   if (facts.pages.length === 0) return { ...base, status: "skip", summary: "No pages." };
   const groups = groupPageSizes(facts.pages);
   const details = groups.map((g) => `${g.label}: page${g.pages.length === 1 ? "" : "s"} ${formatPageList(g.pages)}`);
-  if (groups.length > 1) {
+  // A landscape page (a rotated wide table) is the same sheet of paper turned sideways, so sizes are compared
+  // orientation-free; landscape pages only get a warning.
+  const portrait = (p: PageFact) => describePageSize(Math.min(p.width, p.height), Math.max(p.width, p.height));
+  const sheets = new Set(facts.pages.map(portrait));
+  const landscape = facts.pages.filter((p) => p.width > p.height).map((p) => p.number);
+  if (sheets.size > 1) {
     return {
       ...base,
       status: "fail",
@@ -137,18 +142,30 @@ export function checkPageSize(facts: PdfFacts, opts: Pick<CheckOptions, "expecte
     };
   }
   const only = facts.pages[0];
-  const name = classifyPageSize(only.width, only.height);
+  const name = classifyPageSize(Math.min(only.width, only.height), Math.max(only.width, only.height));
+  const sheet = [...sheets][0];
   if (opts.expectedSize && name !== opts.expectedSize) {
     return {
       ...base,
       status: "fail",
-      summary: `${groups[0].label}, but this venue expects ${opts.expectedSize}.`,
+      summary: `${sheet}, but this venue expects ${opts.expectedSize}.`,
       details,
       why: `The selected venue requires ${opts.expectedSize} paper. A different size changes margins and line breaks after printing or stamping.`,
       fix:
         opts.expectedSize === "Letter"
           ? "In LaTeX pass letterpaper to the document class (and to geometry), and run pdflatex rather than dvips with an A4 default."
           : "In LaTeX pass a4paper to the document class (and to geometry). In Word set Layout → Size → A4.",
+    };
+  }
+  if (landscape.length) {
+    const n = landscape.length;
+    return {
+      ...base,
+      status: "warn",
+      summary: `${sheet} on all ${facts.pageCount} page${facts.pageCount === 1 ? "" : "s"}; ${n} ${n === 1 ? "is" : "are"} landscape.`,
+      details: [`Landscape: page${n === 1 ? "" : "s"} ${formatPageList(landscape)}`],
+      why: "Rotated pages (usually wide tables or figures) are allowed by most venues, but some submission systems stamp headers or page numbers in the wrong place on them.",
+      fix: "If the venue does not allow landscape pages, scale the table to fit the portrait page (\\resizebox, adjustbox) instead of using landscape/sidewaystable.",
     };
   }
   return { ...base, status: "pass", summary: `${groups[0].label} on all ${facts.pageCount} page${facts.pageCount === 1 ? "" : "s"}.` };

@@ -38,7 +38,7 @@ const MAIN_NAMES = ["main.tex", "ms.tex", "paper.tex", "article.tex", "manuscrip
 export function findMainTex(texts: Record<string, string>): { main: string | null; candidates: string[] } {
   const candidates = Object.keys(texts)
     .filter((p) => extname(p) === "tex")
-    .filter((p) => /\\documentclass\s*(\[[^\]]*\])?\s*\{/.test(blankComments(texts[p])))
+    .filter((p) => /\\document(?:class|style)\s*(\[[^\]]*\])?\s*\{/.test(blankComments(texts[p])))
     .sort((a, b) => {
       const score = (p: string) =>
         (/\\begin\s*\{document\}/.test(blankComments(texts[p])) ? 0 : 10) +
@@ -89,7 +89,7 @@ function skipOptional(s: string, i: number): number {
 }
 
 const CMD_RE =
-  /\\(input|include|subfile|includegraphics|includesvg|includepdf|includestandalone|lstinputlisting|verbatiminput|inputminted|bibliography|addbibresource|addglobalbib|graphicspath|import|subimport|inputfrom|subinputfrom|includefrom|subincludefrom|usepackage|RequirePackage|documentclass|LoadClass|bibliographystyle)(?![A-Za-z@])\*?/g;
+  /\\(@@input|@input|InputIfFileExists|input|include|subfile|includegraphics|includesvg|includepdf|includestandalone|lstinputlisting|verbatiminput|inputminted|bibliography|addbibresource|addglobalbib|graphicspath|import|subimport|inputfrom|subinputfrom|includefrom|subincludefrom|usepackage|RequirePackage|documentclass|LoadClass|bibliographystyle)(?![A-Za-z@])\*?/g;
 
 interface RawCommand {
   command: string;
@@ -105,7 +105,7 @@ export function extractCommands(src: string): RawCommand[] {
     let i = skipOptional(src, m.index! + m[0].length);
     const g1 = readGroup(src, i);
     if (!g1) {
-      if (command === "input") {
+      if (command === "input" || command === "@@input" || command === "@input") {
         const bare = /^\s*([^\s{}\\%]+)/.exec(src.slice(m.index! + m[0].length));
         if (bare) res.push({ command, args: [bare[1]], index: m.index! });
       }
@@ -220,7 +220,7 @@ export function resolveProject(main: string, texts: Record<string, string>, allP
         warnings.push({
           level: "warning",
           code: "case-mismatch",
-          message: `\\${ref.command}{${ref.target}} only matches "${ref.resolved}" ignoring case. arXiv's file system is case-sensitive, so the build will fail; rename the file or fix the reference.`,
+          message: `\\${ref.command}{${ref.target}} only matches "${ref.resolved}" ignoring case. arXiv's file system is case-sensitive; TeX Live usually still finds the file through its case-insensitive fallback, but other tools and TeX setups may not. Rename the file or fix the reference so they match exactly.`,
           file: ref.from,
           line: ref.line,
         });
@@ -258,7 +258,7 @@ export function resolveProject(main: string, texts: Record<string, string>, allP
         });
         continue;
       }
-      if (["input", "include", "subfile", "import", "subimport", "inputfrom", "subinputfrom", "includefrom", "subincludefrom", "includestandalone"].includes(cmd.command)) {
+      if (["input", "@@input", "@input", "InputIfFileExists", "include", "subfile", "import", "subimport", "inputfrom", "subinputfrom", "includefrom", "subincludefrom", "includestandalone"].includes(cmd.command)) {
         let dirs = bases;
         let nextImportBase: string | null = importBase;
         if (cmd.args.length === 2) {
@@ -278,6 +278,7 @@ export function resolveProject(main: string, texts: Record<string, string>, allP
         const ref: Reference = { ...base, kind: "tex", resolved: hit?.path ?? null, caseMismatch: hit?.caseMismatch };
         record(ref, `\\${cmd.command} in ${at}`);
         if (hit) queue.push({ path: hit.path, importBase: nextImportBase });
+        else if (cmd.command === "InputIfFileExists") continue;
         else if (cmd.command !== "includestandalone" || !index.find(dirs.map((d) => join(d, `${target}.pdf`))))
           warnings.push({ level: "danger", code: "missing-file", message: `\\${cmd.command}{${target}} points to a file that isn't in the zip.`, file: path, line });
         else {

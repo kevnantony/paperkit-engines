@@ -118,7 +118,13 @@ export function planCleanup(files: ProjectFile[], texts: Record<string, string>,
     .map(([, t]) => blankComments(t))
     .join("\n");
   const mainStem = main ? stripExt(main) : null;
+  const mainDir = main ? dirname(main) : "";
   const hasMacroRefs = graph?.refs.some((r) => r.macro) ?? false;
+  // arXiv uses <main>.bbl when present and otherwise runs BibTeX/Biber itself, so without a .bbl the .bib is needed.
+  const hasMainBbl = !!mainStem && files.some((f) => f.path === `${mainStem}.bbl`);
+  const neededBibs = new Set(hasMainBbl ? [] : (graph?.refs ?? []).filter((r) => r.kind === "bib" && r.resolved).map((r) => r.resolved!));
+  /** arXiv publishes files in a top-level anc/ folder as ancillary material (data, code, supplements). */
+  const isAncillary = (p: string) => p.startsWith(mainDir ? `${mainDir}/anc/` : "anc/") || p.startsWith("anc/");
   const unknownKept: string[] = [];
 
   const entries: PlanEntry[] = files.map(({ path, size }) => {
@@ -132,11 +138,17 @@ export function planCleanup(files: ProjectFile[], texts: Record<string, string>,
     if (name === "00README.json" || name === "00README.XXX" || name === "00README") return e("support", "keep", "arXiv processing instructions");
 
     if (ext === "bbl") return e("bibliography", "keep", stripExt(path) === mainStem ? "compiled bibliography (arXiv needs it)" : "compiled bibliography");
+    if (isAncillary(path)) return e("other", "keep", "arXiv ancillary file (anc/ folder)");
     if (ext === "bib") {
       const why = used.get(path);
+      if (neededBibs.has(path)) return e("bibliography", "keep", `no ${basename(mainStem!)}.bbl, so arXiv runs BibTeX/Biber on this file`);
       return opts.keepBib
         ? e("bibliography", "keep", why ? `kept by option (${why})` : "kept by option")
-        : e("bibliography", "remove", "arXiv builds from the .bbl; turn on “Keep .bib” to include it");
+        : e(
+            "bibliography",
+            "remove",
+            hasMainBbl ? "arXiv builds from the .bbl; turn on “Keep .bib” to include it" : "not named by \\bibliography or \\addbibresource; turn on “Keep .bib” to include it",
+          );
     }
     if (BUILD_EXTS.includes(ext) || (ext === "gz" && /\.synctex\.gz$/i.test(name))) return e("build", "remove", `LaTeX build output (.${ext})`);
     if (ext === "pdf" && mainStem && stripExt(path) === mainStem) return e("build", "remove", "compiled paper PDF; arXiv would use it instead of your sources");
@@ -172,12 +184,18 @@ export function planCleanup(files: ProjectFile[], texts: Record<string, string>,
   }
 
   if (graph?.usesBibliography && mainStem) {
-    const bbl = files.find((f) => f.path === `${mainStem}.bbl`);
-    if (!bbl)
+    const bbl = basename(mainStem) + ".bbl";
+    if (!hasMainBbl && neededBibs.size)
+      warnings.push({
+        level: "warning",
+        code: "missing-bbl",
+        message: `${bbl} is missing, so arXiv will run BibTeX/Biber on your .bib (kept in the upload). For references that match your local build exactly (and for biblatex or bibtex8/upbibtex), compile locally and add ${bbl} next to ${basename(main!)}.`,
+      });
+    else if (!hasMainBbl)
       warnings.push({
         level: "danger",
         code: "missing-bbl",
-        message: `${basename(mainStem)}.bbl is missing. arXiv does not run BibTeX/Biber, so your references will show as “?”. Compile locally and add ${basename(mainStem)}.bbl next to ${basename(main!)}.`,
+        message: `${bbl} is missing and so is the .bib it would be built from. arXiv will refuse the submission: add ${bbl} (compile locally) or the .bib next to ${basename(main!)}.`,
       });
     if (graph.usesBiblatex)
       warnings.push({ level: "info", code: "biblatex", message: "biblatex detected: the .bbl must be produced by the same biblatex version arXiv uses (check arXiv's TeX Live year)." });

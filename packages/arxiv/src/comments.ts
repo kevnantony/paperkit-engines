@@ -65,11 +65,25 @@ export function findCommentStart(line: string): number {
     let j = i + 1;
     while (j < line.length && /[A-Za-z@]/.test(line[j])) j++;
     const name = line.slice(i + 1, j);
-    if (name === "verb") {
+    if (name === "verb" || name === "Verb") {
       if (line[j] === "*") j++;
       const delim = line[j];
       if (delim === undefined) return -1;
       const end = line.indexOf(delim, j + 1);
+      i = end < 0 ? line.length : end + 1;
+      continue;
+    }
+    if (name === "lstinline" || name === "mintinline") {
+      // \lstinline[opts]|code| or {code}; \mintinline[opts]{lang}|code| or {code}. The code is read verbatim.
+      while (line[j] === " ") j++;
+      if (line[j] === "[") {
+        const close = line.indexOf("]", j);
+        j = close < 0 ? line.length : close + 1;
+      }
+      if (name === "mintinline" && line[j] === "{") j = skipBraceGroup(line, j);
+      const delim = line[j];
+      if (delim === undefined) return -1;
+      const end = line.indexOf(delim === "{" ? "}" : delim, j + 1);
       i = end < 0 ? line.length : end + 1;
       continue;
     }

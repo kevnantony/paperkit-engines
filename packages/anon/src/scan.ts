@@ -34,6 +34,25 @@ export const INSTITUTION_RE =
 
 export const hasLocalPath = (s: string) => new RegExp(LOCAL_PATH_RE.source).test(s);
 
+/** Author values that are themselves anonymous ("Anonymous Submission", "Anonymous Author(s)", "Authors"). */
+const ANON_AUTHOR_RE = /^\s*(?:(?:anonym\w*|anon\.?)(?:\s+(?:authors?(?:\(s\))?|submission|submitter|paper|for\s+review))*|authors?|unknown|withheld)\s*$/i;
+export const isAnonymousAuthor = (s: string) => ANON_AUTHOR_RE.test(s);
+
+/** Template placeholders such as anon.email@domain.com or first.last@example.com: not a real address. */
+const PLACEHOLDER_DOMAIN_RE = /@(?:domain|email|anonymous|anon|institution|xxx+|xyz)\.[a-z]{2,}$|@anonymous\./i;
+const PLACEHOLDER_LOCAL_RE = /^\{?\s*(?:anon\w*|anonymous\w*)[@}.]/i;
+export const isPlaceholderEmail = (s: string) => PLACEHOLDER_DOMAIN_RE.test(s.trim()) || PLACEHOLDER_LOCAL_RE.test(s.trim());
+
+/**
+ * Wording before a link that says the code/data is the authors' own ("we release our code at", "Code is available
+ * at"). Links without it (third-party tools, datasets, textbooks) are only a Medium hint.
+ */
+const OWN_RELEASE_RE =
+  /\b(?:our|we\s+(?:release|provide|publish|share|open[- ]?source|make))\b|\b(?:code|implementation|source|models?|data(?:sets?)?|weights|checkpoints?|demo)\b[^.]{0,80}\b(?:is|are|will\s+be)\s+(?:publicly\s+|freely\s+|openly\s+)?(?:available|released|hosted)\b/i;
+
+/** "Acknowledgments vi" or "Acknowledgments . . . . 12" in a table of contents. */
+const TOC_ENTRY_RE = /^[ \t]*(?:(?:\.[ \t]*){3,}|[ivxlc]+[ \t]*(?:\n|$)|\d+[ \t]*(?:\n|$))/;
+
 /** All self-citation phrases, with overlapping/adjacent hits merged into one range. */
 export function selfCitationMatches(text: string): TextMatch[] {
   const all = SELF_CITATION_RES.flatMap((re) => findAll(text, re)).sort((a, b) => a.index - b.index);
@@ -89,18 +108,26 @@ export function scanPdfPages(pages: string[], identifiers: string[]): Finding[] 
       }
     }
     for (const m of findAll(text, EMAIL_RE)) {
+      if (isPlaceholderEmail(m.text)) continue;
       add(out, { severity: "high", rule: "email", title: "Email address", location: loc, snippet: snip(m.index, m.length) });
     }
     for (const m of findAll(text, REPO_URL_RE)) {
       if (!/\//.test(m.text.replace(/^https?:\/\//i, "")) && !/github\.io/i.test(m.text)) continue; // bare domain mention
       const refs = m.index >= refStart;
+      // pdf.js often splits a URL at a line break ("https://github.com/ google-research/bert"), so include the next word.
+      const url = text.slice(m.index, m.index + m.length + 60).split(/\s/).slice(0, 2).join("");
+      const mine = identifiers.some((id) => findIdentifier(url, id).length > 0 || url.toLowerCase().includes(id.toLowerCase().replace(/\s+/g, "")));
+      const sentence = text.slice(Math.max(0, m.index - 160), m.index).split(/[.!?]\s+(?=[A-Z0-9])/).pop() ?? "";
+      const own = mine || (!refs && OWN_RELEASE_RE.test(sentence));
       add(out, {
-        severity: refs ? "medium" : "high",
+        severity: own ? "high" : refs ? "low" : "medium",
         rule: "repo-link",
-        title: "Non-anonymous code or model link",
+        title: own ? "Non-anonymous code or model link" : "Code or model link: check it isn't yours",
         location: loc,
         snippet: snip(m.index, m.length),
-        hint: "Use an anonymized mirror such as anonymous.4open.science for review.",
+        hint: own
+          ? "Use an anonymized mirror such as anonymous.4open.science for review."
+          : "Fine for third-party code. If this repository is yours, replace it with an anonymized mirror (anonymous.4open.science).",
       });
     }
     {
@@ -110,7 +137,7 @@ export function scanPdfPages(pages: string[], identifiers: string[]): Finding[] 
     }
     for (const m of findAll(text, ACK_HEADING_RE)) {
       const after = text.slice(m.index + m.length, m.index + m.length + 220);
-      if (WITHHELD_RE.test(after) || after.trim().length < 15) continue;
+      if (WITHHELD_RE.test(after) || after.trim().length < 15 || TOC_ENTRY_RE.test(after)) continue;
       add(out, {
         severity: "high",
         rule: "acknowledgments",
@@ -189,7 +216,7 @@ export function scanSourceFile(path: string, text: string, identifiers: string[]
       });
     }
   }
-  for (const m of findAll(code, EMAIL_RE)) add(out, { severity: sev("high", "low"), rule: "email", title: "Email address", location: at(m.index), snippet: snip(m.index, m.length) });
+  for (const m of findAll(code, EMAIL_RE)) if (!isPlaceholderEmail(m.text)) add(out, { severity: sev("high", "low"), rule: "email", title: "Email address", location: at(m.index), snippet: snip(m.index, m.length) });
   for (const m of findAll(code, REPO_URL_RE)) {
     if (!/\//.test(m.text.replace(/^https?:\/\//i, "")) && !/github\.io/i.test(m.text)) continue;
     add(out, { severity: sev("high", "medium"), rule: "repo-link", title: "Non-anonymous code or model link", location: at(m.index), snippet: snip(m.index, m.length), hint: "Use an anonymized mirror such as anonymous.4open.science for review." });
@@ -282,7 +309,8 @@ export function scanPdfMetadata(meta: PdfMetadata, identifiers: string[]): Findi
   for (const [field, value] of fields) {
     if (!value || !value.trim()) continue;
     const loc = { kind: "metadata" as const, field };
-    if (field === "Author" && !/^\s*(anonymous|anon\.?|author|authors|unknown)\s*$/i.test(value)) {
+    if (field === "Author" && isAnonymousAuthor(value)) continue;
+    if (field === "Author") {
       add(out, { severity: "high", rule: "pdf-metadata", title: "PDF metadata names an author", location: loc, snippet: value, hint });
       continue;
     }
@@ -295,10 +323,16 @@ export function scanPdfMetadata(meta: PdfMetadata, identifiers: string[]): Findi
     if (ids.length) add(out, { severity: "high", rule: "pdf-metadata", title: `PDF ${field} contains “${ids[0]}”`, location: loc, snippet: value, hint });
   }
   if (meta.xmp) {
-    for (const a of xmpAuthors(meta.xmp)) {
-      if (/^\s*anonym/i.test(a)) continue;
-      add(out, { severity: "high", rule: "pdf-metadata", title: "XMP metadata names an author", location: { kind: "metadata", field: "XMP dc:creator" }, snippet: a, hint });
-    }
+    const authors = xmpAuthors(meta.xmp).filter((a) => !isAnonymousAuthor(a));
+    if (authors.length)
+      add(out, {
+        severity: "high",
+        rule: "pdf-metadata",
+        title: authors.length === 1 ? "XMP metadata names an author" : `XMP metadata names ${authors.length} authors`,
+        location: { kind: "metadata", field: "XMP dc:creator" },
+        snippet: authors.length > 12 ? `${authors.slice(0, 12).join(", ")} … (+${authors.length - 12} more)` : authors.join(", "),
+        hint,
+      });
     for (const p of new Set(meta.xmp.match(LOCAL_PATH_RE) ?? []))
       add(out, { severity: "high", rule: "pdf-metadata", title: "XMP metadata contains a local path", location: { kind: "metadata", field: "XMP" }, snippet: p, hint });
   }

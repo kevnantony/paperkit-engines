@@ -22,6 +22,21 @@ describe("helpers", () => {
   it("strips comments but keeps \\%", () => {
     expect(stripComments("a % b\nc \\% d % e")).toBe("a \nc \\% d ");
   });
+  it("keeps % that is literal inside \\url, \\href and \\verb", () => {
+    expect(stripComments("\\url{https://x.org/a%20b} ok % c")).toBe("\\url{https://x.org/a%20b} ok ");
+    expect(stripComments("\\verb|50%| more")).toBe("\\verb|50%| more");
+  });
+  it("does not lose text after a URL containing %", () => {
+    // Real footnotes link to percent-encoded URLs; cutting at the % left \url{ unbalanced and swallowed the paragraph.
+    const r = countLatex("\\begin{document}One two\\footnote{See \\url{https://x.org/a%20b} for more.}\nthree four five six.\n\nSeven.\\end{document}");
+    expect(r.totals).toMatchObject({ text: 7, footnotes: 3 });
+    expect(countLatex("\\begin{document}Code \\verb|50%| here and more words after it.\\end{document}").totals.text).toBe(7);
+    expect(countLatex("\\begin{document}Run \\mintinline{python}|f(a, b)| and \\lstinline{x y} now.\\end{document}").totals.text).toBe(3);
+  });
+  it("counts numbers with thousands separators as one word", () => {
+    // LoRA abstract: "by 10,000 times" was counted as 4 words.
+    expect(countWordsInText("reduce it by 10,000 times and 1,234,567.5 more; items 1, 2")).toBe(11);
+  });
   it("counts hyphenated words and numbers as single words", () => {
     expect(countWordsInText("State-of-the-art results in 2024, e.g. here.")).toBe(6);
   });
@@ -98,6 +113,44 @@ describe("math, braces and commands", () => {
     const src = "\\section{A} one two \\appendix \\section{B} three";
     expect(body(src).totals.text).toBe(3);
     expect(countLatex(`\\begin{document}${src}\\end{document}`, { includeAppendix: false }).totals.text).toBe(2);
+  });
+
+  it("does not add footnotes inside the abstract to the abstract count", () => {
+    // ResNet abstract: a footnote with two URLs and "and" made the abstract one word too long.
+    const r = countLatex("\\begin{document}\\begin{abstract}Two words\\footnote{\\url{a} and \\url{b}.}.\\end{abstract}\\end{document}");
+    expect(r.abstract).toBe(2);
+    expect(r.totals).toMatchObject({ text: 2, footnotes: 1 });
+  });
+
+  it("counts an \\abstract{...} given in the preamble (JCAP/JHEP style)", () => {
+    // Real astro-ph e-print with jcappub.sty: \abstract{...} sits before \begin{document}; it counted 0 words.
+    const r = countLatex("\\documentclass{article}\\title{T}\\abstract{Three short words.}\\begin{document}\\maketitle\\section{Intro}Body text.\\end{document}");
+    expect(r.abstract).toBe(3);
+    expect(r.totals.text).toBe(5);
+  });
+
+  it("keeps section titles readable: math as written, \\texorpdfstring uses its text form", () => {
+    const r = countLatex(
+      "\\begin{document}\\section{More on the \\texorpdfstring{$SU(2)_1$}{SU(2)1} WZW Model}a\\section{Correlation between $\\Delta W$ and $W$}b\\section{Kernel \\(L_{\\nu}\\)}c\\end{document}",
+    );
+    expect(r.sections.map((s) => s.title)).toEqual(["More on the SU(2)1 WZW Model", "Correlation between $\\Delta W$ and $W$", "Kernel \\(L_{\\nu}\\)"]);
+  });
+
+  it("expands simple user text macros such as a method name", () => {
+    // BERT paper: \newcommand\bert{BERT\xspace} is used three times in the abstract; each use was lost.
+    const src = [
+      "\\documentclass{article}",
+      "\\newcommand\\bert{BERT\\xspace}",
+      "\\newcommand{\\ours}{\\textsc{AdSteer}}",
+      "\\def\\etal{et~al.}",
+      "\\newcommand{\\dmodel}{d_{\\text{model}}}",
+      "\\newcommand{\\vect}[1]{\\mathbf{#1}}",
+      "\\begin{document}",
+      "\\bert is simple. We call it \\ours{} and \\ours. Smith \\etal said $\\dmodel$ and \\vect{x} too.",
+      "\\end{document}",
+    ].join("\n");
+    // BERT is simple We call it AdSteer and AdSteer Smith et al said and x too
+    expect(countLatex(src).totals.text).toBe(16);
   });
 
   it("works on snippets without a preamble", () => {

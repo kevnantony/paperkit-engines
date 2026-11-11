@@ -56,6 +56,19 @@ describe("parsing", () => {
     ]);
   });
 
+  it("reduces Markdown links, images and inline HTML in README tables to their text", () => {
+    // Ultralytics README: "[YOLO26n](https://...)" and "mAP<sup>val<br>50-95</sup>" were emitted literally
+    // (URL in the cell, \textless{}sup\textgreater{} in the header).
+    const t = parseTable(
+      "| Model | size<br><sup>(pixels)</sup> | mAP<sup>val<br>50-95</sup> | Logo |\n|---|---|---|---|\n| [YOLO26n](https://x.com/y_n) | 640 | 40.9 | ![logo](a.png) |\n| ~~old~~ <b>new</b> | 320 | 1 &lt; 2 | <img src=\"a.png\" width=\"20\"> |",
+    );
+    expect(t.rows).toEqual([
+      ["Model", "size (pixels)", "mAP val 50-95", "Logo"],
+      ["YOLO26n", "640", "40.9", "logo"],
+      ["old new", "320", "1 < 2", ""],
+    ]);
+  });
+
   it("honours a format override", () => {
     expect(parseTable("a\tb,c", "csv").rows).toEqual([["a\tb", "c"]]);
   });
@@ -86,6 +99,14 @@ describe("escaping", () => {
   it("maps common Unicode math symbols", () => {
     expect(escapeLatex("85 ± 1 × 2")).toBe("85 $\\pm$ 1 $\\times$ 2");
   });
+  it("maps Greek letters, ≈ ≠ ∞ and check marks that pdflatex cannot typeset from UTF-8", () => {
+    // Ultralytics README header "mAP<sup>val</sup> δ" hit "Missing character δ" (a hard error under pdflatex).
+    expect(escapeLatex("δ=0.5, α ≈ β ≠ ∞, Δ")).toBe("$\\delta$=0.5, $\\alpha$ $\\approx$ $\\beta$ $\\neq$ $\\infty$, $\\Delta$");
+    const { latex, packages } = toLatex(parseTable("Method,Open\nA,✓\nB,✗"));
+    expect(latex).toContain("A      & $\\checkmark$");
+    expect(latex).toContain("$\\times$");
+    expect(packages).toContain("amssymb");
+  });
   it("is used in output only when enabled", () => {
     const t = parseTable("a_b,c%\n1,2", "csv");
     expect(toLatex(t).latex).toContain("a\\_b & c\\%");
@@ -113,6 +134,23 @@ describe("best-value bolding", () => {
   });
   it("does nothing when 'none'", () => {
     expect(toLatex(t, { best: "none" }).latex).not.toContain("\\textbf");
+  });
+  it("treats a lone Unicode minus (copied from a PDF) as a missing value, not text", () => {
+    // Real results tables pasted from PDFs use U+2212 for "not reported".
+    const m = buildModel(parseTable("Method\tAcc\nBaseline\t85.3 ± 0.4\nOurs\t91.2 ± 0.3\nOracle\t−"), { header: true, align: "auto", best: "max" });
+    expect(m.numeric).toEqual([false, true]);
+    expect(m.best.map((r) => r[1])).toEqual([false, true, false]);
+  });
+  it("ignores footnote markers (†, ‡, *) after numbers but keeps them in the output", () => {
+    // ResNet-style table: "8.43†" marks a result reported elsewhere.
+    const p = parseTable("method\ttop-5\nVGG\t8.43†\nGoogLeNet\t7.89\nResNet-152\t4.49*");
+    const m = buildModel(p, { header: true, align: "auto", best: "min" });
+    expect(m.numeric).toEqual([false, true]);
+    expect(m.best.map((r) => r[1])).toEqual([false, false, true]);
+    const { latex, sColumns } = toLatex(p, { best: "min", siunitx: true });
+    expect(latex).toContain("\\textbf{4.49*}");
+    expect(latex).toContain("8.43†");
+    expect(sColumns).toEqual([false, false]); // siunitx can't parse the marker, so the column stays a plain r column
   });
 });
 

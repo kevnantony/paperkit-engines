@@ -20,6 +20,8 @@ import {
   PDFString,
   type PDFObject,
 } from "pdf-lib";
+import { loadPdfDocument } from "./pdf-load";
+import { jpegMetadataCount, stripJpegMetadata } from "./jpeg";
 
 export interface PdfMetadata {
   title: string | null;
@@ -47,6 +49,8 @@ export interface PdfMetadata {
   attachments: { name: string; source: "document" | "annotation" }[];
   /** Link targets pointing at the local file system (file://, /Users/…, C:\…). */
   localLinks: string[];
+  /** JPEG images whose data still carries EXIF/XMP/Photoshop/comment segments (camera, author, edit history). */
+  imageMetadata: number;
   pageCount: number;
   encrypted: boolean;
 }
@@ -193,13 +197,25 @@ function readAnnotationLeaks(doc: PDFDocument) {
   return { annotationAuthors: [...new Set(authors)], annotationMarkup: markup, attachments, localLinks: [...new Set(localLinks)] };
 }
 
-const isXmpStream = (doc: PDFDocument, v: PDFObject | undefined) => {
+/** Image streams whose data is a plain JPEG (/Filter /DCTDecode, alone). */
+function jpegStreams(doc: PDFDocument): [PDFRef, PDFRawStream][] {
+  const out: [PDFRef, PDFRawStream][] = [];
+  for (const [ref, o] of doc.context.enumerateIndirectObjects()) {
+    if (!(o instanceof PDFRawStream) || nameOf(o.dict.lookup(N("Subtype"))) !== "Image") continue;
+    const f = o.dict.lookup(N("Filter"));
+    const filter = f instanceof PDFArray && f.size() === 1 ? doc.context.lookup(f.get(0)) : f;
+    if (nameOf(filter as PDFObject | undefined) === "DCTDecode") out.push([ref, o]);
+  }
+  return out;
+}
+
+const isXmpStream =(doc: PDFDocument, v: PDFObject | undefined) => {
   const s = v instanceof PDFRef ? doc.context.lookup(v) : v;
   return s instanceof PDFStream;
 };
 
 export async function readPdfMetadata(bytes: Uint8Array | ArrayBuffer): Promise<PdfMetadata> {
-  const doc = await PDFDocument.load(bytes, { ignoreEncryption: true, updateMetadata: false, throwOnInvalidObject: false });
+  const doc = await loadPdfDocument(bytes);
   const encrypted = doc.isEncrypted;
   const str = (f: () => string | undefined) => (encrypted ? null : safe(f)) || null;
   const date = (f: () => Date | undefined) => {
@@ -246,6 +262,7 @@ export async function readPdfMetadata(bytes: Uint8Array | ArrayBuffer): Promise<
     embeddedFileNames: [...new Set(embeddedFileNames)],
     embeddedInfo,
     ...leaks,
+    imageMetadata: encrypted ? 0 : jpegStreams(doc).filter(([, s]) => jpegMetadataCount(s.getContents()) > 0).length,
     pageCount: doc.getPageCount(),
     encrypted,
   };
@@ -256,6 +273,19 @@ export interface StripOptions {
   keepTitle: boolean;
   /** Remove embedded files (document attachments and FileAttachment annotations). Default true. */
   removeAttachments?: boolean;
+  /** Categories to leave untouched (all removed by default). Additive: used by the Metadata Stripper's per-field toggles. */
+  keep?: {
+    /** XMP /Metadata streams (document, pages, images). */
+    xmp?: boolean;
+    /** /PieceInfo and /LastModified. */
+    pieceInfo?: boolean;
+    /** pdfTeX /PTEX.FileName and /PTEX.InfoDict of embedded figures. */
+    figurePaths?: boolean;
+    /** Annotation author, dates, rich text and subject. */
+    annotations?: boolean;
+    /** EXIF/XMP/IPTC segments inside embedded JPEG images. */
+    imageMetadata?: boolean;
+  };
 }
 
 /** Delete every indirect object not reachable from the trailer (Root / Info). */
@@ -283,7 +313,7 @@ function collectGarbage(doc: PDFDocument) {
 }
 
 export async function stripPdfMetadata(bytes: Uint8Array | ArrayBuffer, opts: StripOptions = { keepTitle: false }): Promise<Uint8Array> {
-  const doc = await PDFDocument.load(bytes, { ignoreEncryption: true, updateMetadata: false, throwOnInvalidObject: false });
+  const doc = await loadPdfDocument(bytes);
   if (doc.isEncrypted) throw new Error("This PDF is encrypted. Remove the password protection first, then strip its metadata.");
   const ctx = doc.context;
   const title = opts.keepTitle ? safe(() => doc.getTitle()) : null;
@@ -325,12 +355,22 @@ export async function stripPdfMetadata(bytes: Uint8Array | ArrayBuffer, opts: St
   }
 
   // Annotation author, dates, rich text and subject. Form-field widgets keep /T (it is the field name).
-  for (const a of annotations(doc)) for (const k of isWidget(a) ? ["M"] : ANNOT_PRIVATE_KEYS) a.delete(N(k));
+  const keep = opts.keep ?? {};
+  if (!keep.annotations) for (const a of annotations(doc)) for (const k of isWidget(a) ? ["M"] : ANNOT_PRIVATE_KEYS) a.delete(N(k));
 
-  const privateKeys = ["Metadata", "PieceInfo", "PTEX.FileName", "PTEX.InfoDict", "LastModified", ...(removeAttachments ? ["AF"] : [])];
+  const privateKeys = [
+    ...(keep.xmp ? [] : ["Metadata"]),
+    ...(keep.pieceInfo ? [] : ["PieceInfo", "LastModified"]),
+    ...(keep.figurePaths ? [] : ["PTEX.FileName", "PTEX.InfoDict"]),
+    ...(removeAttachments ? ["AF"] : []),
+  ];
   for (const dict of [...allDicts(doc)]) {
     if (dict === info) continue;
     for (const key of privateKeys) dict.delete(N(key));
+  }
+  for (const [ref, s] of keep.imageMetadata ? [] : jpegStreams(doc)) {
+    const clean = stripJpegMetadata(s.getContents());
+    if (clean) ctx.assign(ref, PDFRawStream.of(s.dict, clean));
   }
   // Viewer preference asking to show the Title in the window bar is fine to keep.
   collectGarbage(doc);

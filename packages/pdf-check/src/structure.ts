@@ -1,7 +1,6 @@
 import {
   PDFArray,
   PDFDict,
-  PDFDocument,
   PDFHexString,
   PDFName,
   PDFNumber,
@@ -12,6 +11,7 @@ import {
   type PDFContext,
 } from "pdf-lib";
 import type { FontFact, PageFact, PdfFacts, PdfMetadata } from "./types";
+import { loadPdfDocument } from "./load";
 import { compareVersions, decodePermissions, readHeaderVersion, stripSubsetPrefix } from "./util";
 
 /** Facts that pdf-lib can read without rendering. Text bounds are added later by the pdf.js pass. */
@@ -30,8 +30,10 @@ function asDict(ctx: PDFContext, obj: PDFObject | undefined): PDFDict | undefine
   return undefined;
 }
 
-function nameOf(obj: PDFObject | undefined): string | undefined {
-  return obj instanceof PDFName ? obj.decodeText() : undefined;
+/** A name value; names may be stored as indirect objects (`/BaseFont 12 0 R`), so references are followed. */
+function nameOf(ctx: PDFContext, obj: PDFObject | undefined): string | undefined {
+  const o = deref(ctx, obj);
+  return o instanceof PDFName ? o.decodeText() : undefined;
 }
 
 function textOf(ctx: PDFContext, obj: PDFObject | undefined): string | undefined {
@@ -54,14 +56,14 @@ interface RawFont {
 }
 
 function describeFont(ctx: PDFContext, font: PDFDict): RawFont {
-  const subtype = nameOf(font.get(N("Subtype"))) ?? "Unknown";
-  const name = nameOf(font.get(N("BaseFont"))) ?? textOf(ctx, font.get(N("Name"))) ?? "(unnamed)";
+  const subtype = nameOf(ctx, font.get(N("Subtype"))) ?? "Unknown";
+  const name = nameOf(ctx, font.get(N("BaseFont"))) ?? textOf(ctx, font.get(N("Name"))) ?? "(unnamed)";
   if (subtype === "Type3") return { name: name === "(unnamed)" ? "Type 3 font" : name, subtype, embedded: true, type3: true };
   if (subtype === "Type0") {
     const desc = deref(ctx, font.get(N("DescendantFonts")));
     const cid = desc instanceof PDFArray && desc.size() > 0 ? asDict(ctx, desc.get(0)) : undefined;
     const fd = cid ? asDict(ctx, cid.get(N("FontDescriptor"))) : undefined;
-    const cidType = cid ? nameOf(cid.get(N("Subtype"))) : undefined;
+    const cidType = cid ? nameOf(ctx, cid.get(N("Subtype"))) : undefined;
     return { name, subtype: cidType ? `Type0/${cidType}` : subtype, embedded: hasFontFile(fd), type3: false };
   }
   const fd = asDict(ctx, font.get(N("FontDescriptor")));
@@ -86,7 +88,7 @@ function collectFonts(
       if (!font) continue;
       onFont(describeFont(ctx, font));
       // Type 3 glyph procedures can use other fonts.
-      if (nameOf(font.get(N("Subtype"))) === "Type3") {
+      if (nameOf(ctx, font.get(N("Subtype"))) === "Type3") {
         collectFonts(ctx, asDict(ctx, font.get(N("Resources"))), onFont, visited, depth + 1);
       }
     }
@@ -98,7 +100,7 @@ function collectFonts(
       const xo = deref(ctx, ref);
       if (!(xo instanceof PDFStream) || visited.has(xo)) continue;
       visited.add(xo);
-      if (nameOf(xo.dict.get(N("Subtype"))) !== "Form") continue;
+      if (nameOf(ctx, xo.dict.get(N("Subtype"))) !== "Form") continue;
       collectFonts(ctx, asDict(ctx, xo.dict.get(N("Resources"))), onFont, visited, depth + 1);
     }
   }
@@ -151,7 +153,7 @@ function scanRisks(ctx: PDFContext): RiskScan {
     if (!dict) return;
     seen.add(obj);
 
-    const s = nameOf(dict.get(N("S")));
+    const s = nameOf(ctx, dict.get(N("S")));
     if (s === "JavaScript" || dict.get(N("JS")) !== undefined) out.javascript = true;
     if (s === "Launch" || s === "GoToR" || s === "GoToE") {
       const target = fileSpecName(ctx, dict.get(N("F"))) ?? textOf(ctx, dict.get(N("Win"))) ?? `${s} action`;
@@ -161,7 +163,9 @@ function scanRisks(ctx: PDFContext): RiskScan {
       const uri = textOf(ctx, dict.get(N("URI")));
       if (uri && /^file:/i.test(uri.trim())) out.fileLinks.push(uri.trim());
     }
-    if (dict.get(N("EF")) !== undefined) {
+    // A file specification's /EF is a dictionary of embedded file streams. Usage-rights signatures
+    // (/TransformParams of Reader-extended forms) use an /EF *array* of permissions: not an attachment.
+    if (asDict(ctx, dict.get(N("EF")))) {
       out.embeddedFiles.push(textOf(ctx, dict.get(N("UF"))) ?? textOf(ctx, dict.get(N("F"))) ?? "(unnamed attachment)");
     }
 
@@ -192,12 +196,12 @@ function clean(s: string | undefined): string | undefined {
 /** Extract structural facts (fonts, sizes, security, metadata) with pdf-lib. Runs in the browser or Node. */
 export async function extractStructure(input: ArrayBuffer | Uint8Array): Promise<StructureFacts> {
   const bytes = input instanceof Uint8Array ? input : new Uint8Array(input);
-  const doc = await PDFDocument.load(bytes, { ignoreEncryption: true, updateMetadata: false, throwOnInvalidObject: false });
+  const doc = await loadPdfDocument(bytes);
   const ctx = doc.context;
 
   // Version: header, overridden by a newer catalog /Version.
   let version = readHeaderVersion(bytes) ?? "1.4";
-  const catalogVersion = nameOf(doc.catalog.get(N("Version")));
+  const catalogVersion = nameOf(ctx, doc.catalog.get(N("Version")));
   if (catalogVersion && /^\d+\.\d+$/.test(catalogVersion) && compareVersions(catalogVersion, version) > 0) version = catalogVersion;
 
   // Encryption.

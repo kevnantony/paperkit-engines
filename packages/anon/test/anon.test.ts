@@ -81,7 +81,7 @@ describe("scanPdfPages", () => {
   it("downgrades names and links in the references", () => {
     const ref = fs.filter((f) => f.location.kind === "pdf" && f.location.page === 2 && f.rule === "identifier");
     expect(ref.map((f) => f.severity)).toEqual(["low"]);
-    expect(fs.find((f) => f.rule === "repo-link" && f.snippet.includes("other/repo"))!.severity).toBe("medium");
+    expect(fs.find((f) => f.rule === "repo-link" && f.snippet.includes("other/repo"))!.severity).toBe("low");
   });
   it("does not flag anonymous.4open.science or withheld acknowledgments", () => {
     expect(fs.some((f) => f.snippet.includes("4open") && f.rule === "repo-link")).toBe(false);

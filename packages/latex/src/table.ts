@@ -108,12 +108,24 @@ function parseMarkdown(text: string): { rows: string[][]; alignHints?: (Align | 
   return { rows, alignHints };
 }
 
-/** Remove simple Markdown emphasis/code markers from a cell. */
+const HTML_ENTITIES: Record<string, string> = { amp: "&", lt: "<", gt: ">", quot: '"', "#39": "'", nbsp: " " };
+
+/**
+ * Reduce a Markdown cell to its text: emphasis/code markers, links and images (`[text](url)` → text), and the inline
+ * HTML GitHub READMEs put in tables (`<br>`, `<sup>`, `<b>`, `<img>`; tags are dropped, line breaks become spaces).
+ */
 function stripMarkdownInline(cell: string): string {
   return cell
+    .replace(/!?\[([^\]]*)\]\([^)\s]*(?:\s+"[^"]*")?\)/g, "$1")
+    .replace(/<br\s*\/?>|<\/?(?:sup|sub|p|div)\b[^>]*>/gi, " ")
+    .replace(/<\/?[a-z][a-z0-9]*\b[^>]*>/gi, "")
+    .replace(/&(amp|lt|gt|quot|#39|nbsp);/g, (_m, e: string) => HTML_ENTITIES[e])
     .replace(/\*\*(.+?)\*\*/g, "$1")
     .replace(/__(.+?)__/g, "$1")
-    .replace(/`([^`]*)`/g, "$1");
+    .replace(/~~(.+?)~~/g, "$1")
+    .replace(/`([^`]*)`/g, "$1")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function parseDelimited(text: string, delimiter: string): string[][] {
@@ -160,7 +172,11 @@ export function parseTable(text: string, format: TableFormat | "auto" = "auto"):
 
 /* ---------------- numbers ---------------- */
 
-const MISSING = new Set(["", "-", "–", "—", "n/a", "na", "nan", "--", "?", "x", "×"]);
+// "−" (U+2212) is what a dash copied out of a PDF usually becomes.
+const MISSING = new Set(["", "-", "–", "—", "−", "n/a", "na", "nan", "--", "?", "x", "×"]);
+
+/** Footnote markers papers put after a number (`8.43†`, `91.2*`). Ignored for the value, kept in the output. */
+const MARKERS_RE = /\s*[†‡§¶*]+$/;
 
 export function isMissing(cell: string): boolean {
   return MISSING.has(cell.trim().toLowerCase());
@@ -191,7 +207,7 @@ const PM_RE_COMMA = /^(.*?)\s*(?:±|\+-|\+\/-|\\pm)\s*([0-9,]+)\s*(%?)$/;
  * With `decimal = ","` the comma is the decimal mark (`0,912` → 0.912).
  */
 export function parseNumber(cell: string, decimal: DecimalMark = "."): ParsedNumber | null {
-  let s = cell.trim();
+  let s = cell.trim().replace(MARKERS_RE, "");
   if (!s) return null;
   let pm: string | undefined;
   const pmMatch = s.match(decimal === "," ? PM_RE_COMMA : PM_RE);
@@ -237,6 +253,7 @@ const THOUSANDS_CELL = /^[+\-−]?[1-9]\d{0,2}(?:,\d{3})+$/;
 function numberCore(cell: string): string {
   return cell
     .trim()
+    .replace(MARKERS_RE, "")
     .replace(/\s*(?:±|\+-|\+\/-|\\pm)\s*[0-9.,]+\s*(%?)$/, "$1")
     .replace(/%$/, "")
     .trim();
@@ -347,11 +364,28 @@ const UNICODE: Record<string, string> = {
   "°": "$^\\circ$",
   "µ": "$\\mu$",
   "μ": "$\\mu$",
+  "≈": "$\\approx$",
+  "∼": "$\\sim$",
+  "≠": "$\\neq$",
+  "∞": "$\\infty$",
+  "←": "$\\leftarrow$",
+  "✓": "$\\checkmark$",
+  "✔": "$\\checkmark$",
+  "✗": "$\\times$",
+  "✘": "$\\times$",
 };
 
-/** Escape LaTeX special characters: & % $ # _ { } ~ ^ \ < > (plus a few common Unicode math symbols). */
+// Greek letters: pdflatex's utf8 input has no text glyphs for them, so they become math (`δ` → `$\delta$`).
+const GREEK = "αβγδεζηθικλνξπρστυφχψωΓΔΘΛΞΠΣΥΦΨΩ";
+const GREEK_NAMES =
+  "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda nu xi pi rho sigma tau upsilon phi chi psi omega Gamma Delta Theta Lambda Xi Pi Sigma Upsilon Phi Psi Omega".split(" ");
+[...GREEK].forEach((ch, i) => (UNICODE[ch] = `$\\${GREEK_NAMES[i]}$`));
+
+const ESCAPE_RE = new RegExp(`[&%$#_{}~^\\\\<>${Object.keys(UNICODE).join("")}]`, "gu");
+
+/** Escape LaTeX special characters: & % $ # _ { } ~ ^ \ < > (plus common Unicode math symbols and Greek letters). */
 export function escapeLatex(s: string): string {
-  return s.replace(/[&%$#_{}~^\\<>±×≤≥−→↑↓°µμ]/g, (ch) => ESCAPES[ch] ?? UNICODE[ch] ?? ch);
+  return s.replace(ESCAPE_RE, (ch) => ESCAPES[ch] ?? UNICODE[ch] ?? ch);
 }
 
 function siunitxFormat(body: string[][], c: number, mark: DecimalMark): string {
@@ -374,7 +408,7 @@ function siunitxEligible(body: string[][], c: number, mark: DecimalMark): boolea
     const cell = r[c] ?? "";
     if (isMissing(cell)) return true;
     const n = parseNumber(cell, mark);
-    return !!n && !n.pm && !n.percent && !/[eE]/.test(cell);
+    return !!n && !n.pm && !n.percent && !/[eE]/.test(cell) && !MARKERS_RE.test(cell.trim());
   });
 }
 
@@ -405,6 +439,7 @@ export function toLatex(parsed: Pick<ParsedTable, "rows" | "alignHints" | "delim
   if (opts.booktabs) packages.push("booktabs");
   if (sCols.some(Boolean)) packages.push("siunitx");
   if (opts.resize) packages.push("graphicx");
+  if (opts.escape && [...(header ?? []), ...body.flat(), opts.caption].some((c) => /[✓✔]/.test(c))) packages.push("amssymb");
 
   const spec = aligns.map((a, c) => (isS(c) ? siunitxFormat(body, c, mark(c)) : a)).join(" ");
 

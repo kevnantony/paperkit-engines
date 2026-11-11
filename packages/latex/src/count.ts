@@ -6,6 +6,8 @@
  * float bodies (except captions), verbatim-like environments and the bibliography.
  */
 
+import { findCommentStart } from "@paperkit-latex/arxiv";
+
 export type Bucket = "text" | "headers" | "captions" | "footnotes";
 
 export interface SectionCount {
@@ -40,24 +42,18 @@ export interface CountOptions {
 
 /* ---------------- comments & includes ---------------- */
 
-/** Remove `%` comments (not `\%`) to end of line, keeping the newline. */
+/**
+ * Remove `%` comments (not `\%`) to end of line, keeping the newline. A `%` inside `\verb|..|`, `\url{..}`,
+ * `\path{..}` or the URL of `\href{..}{..}` is literal and kept (shared rules with the arXiv Cleaner).
+ */
 export function stripComments(src: string): string {
-  const out: string[] = [];
-  for (const line of src.split("\n")) {
-    let cut = line.length;
-    for (let i = 0; i < line.length; i++) {
-      if (line[i] === "\\") {
-        i++; // skip escaped char (\%, \\)
-        continue;
-      }
-      if (line[i] === "%") {
-        cut = i;
-        break;
-      }
-    }
-    out.push(line.slice(0, cut));
-  }
-  return out.join("\n");
+  return src
+    .split("\n")
+    .map((line) => {
+      const cut = findCommentStart(line);
+      return cut < 0 ? line : line.slice(0, cut);
+    })
+    .join("\n");
 }
 
 function dirname(p: string): string {
@@ -261,15 +257,83 @@ function normalizeAccents(s: string): string {
 
 /** Readable section title: drop labels/refs/citations, command names and braces; keep inline math as written. */
 function plainTitle(s: string): string {
-  return s
-    .replace(/\\(label|cite[a-z]*|ref|eqref|footnote|thanks)\*?\s*(\[[^\]]*\])?\s*\{[^{}]*\}/g, "")
-    .replace(/\\(?!\$)[a-zA-Z@]+\*?/g, "")
-    .replace(/[{}~]/g, " ")
+  const cleanText = (t: string) =>
+    t
+      .replace(/\\(label|cite[a-z]*|ref|eqref|footnote|thanks)\*?\s*(\[[^\]]*\])?\s*\{[^{}]*\}/g, "")
+      .replace(/\\(?!\$)[a-zA-Z@]+\*?/g, "")
+      .replace(/[{}~]/g, " ");
+  // Math ($..$, \(..\)) is kept exactly as written; commands and braces are dropped only from the text around it.
+  const parts = texorpdf(s, 1).split(/(\$[^$]*\$|\\\([\s\S]*?\\\))/);
+  return parts
+    .map((p, i) => (i % 2 ? p : cleanText(p)))
+    .join("")
     .replace(/\s+/g, " ")
     .trim();
 }
 
-const WORD_RE = /[\p{L}\p{N}]+(?:['’\-.][\p{L}\p{N}]+)*/gu;
+/** Replace `\texorpdfstring{tex}{plain}` by one of its arguments (0: the typeset TeX, 1: the plain-text form). */
+function texorpdf(s: string, keep: 0 | 1): string {
+  const re = /\\texorpdfstring\s*\{/g;
+  let out = "";
+  let last = 0;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(s))) {
+    const a = m.index + m[0].length - 1;
+    const aEnd = skipGroup(s, a);
+    const b = skipSpaces(s, aEnd);
+    if (s[b] !== "{") continue;
+    const bEnd = skipGroup(s, b);
+    const pick = keep === 0 ? s.slice(a, aEnd) : s.slice(b, bEnd);
+    out += s.slice(last, m.index) + pick;
+    last = bEnd;
+    re.lastIndex = bEnd;
+  }
+  return out + s.slice(last);
+}
+
+/* ---------------- user text macros ---------------- */
+
+/** Commands allowed in the body of a macro we expand: text styling, spacing and font switches. */
+const SAFE_IN_MACRO = new Set([...Object.keys(TEXT_ARGS), "xspace", "@", "sc", "bf", "it", "em", "rm", "tt", "sf", "scshape", "bfseries", "itshape", "upshape", "normalfont", "small", "footnotesize", "relax", "ignorespaces"]);
+const RESERVED_MACROS = new Set([...Object.keys(DROP_ARGS), ...Object.keys(HEADER_CMDS), "caption", "footnote", "begin", "end", "title", "abstract", "item"]);
+
+/**
+ * Argument-free macros whose body is plain text, e.g. `\newcommand\bert{BERT\xspace}` or `\def\ours{\textsc{Ours}}`.
+ * Method names defined this way are used all over ML papers; without expansion every use counted zero words.
+ * Bodies with math (`$ _ ^`), parameters or unknown commands are left alone.
+ */
+export function collectTextMacros(src: string): Map<string, string> {
+  const macros = new Map<string, string>();
+  const re = /\\(?:(?:re)?newcommand|providecommand|DeclareRobustCommand)\*?\s*(?:\{\s*\\([a-zA-Z@]+)\s*\}|\\([a-zA-Z@]+))\s*\{|\\(?:g|e|x)?def\s*\\([a-zA-Z@]+)\s*\{/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(src))) {
+    const name = m[1] ?? m[2] ?? m[3];
+    const open = m.index + m[0].length - 1;
+    const end = skipGroup(src, open);
+    const body = src.slice(open + 1, end - 1);
+    re.lastIndex = end;
+    if (RESERVED_MACROS.has(name) || /[#$_^&%]|\\\\/.test(body)) continue;
+    const cmds = [...body.matchAll(/\\([a-zA-Z@]+)/g)].map((c) => c[1]);
+    if (!cmds.every((c) => SAFE_IN_MACRO.has(c) || macros.has(c))) continue;
+    macros.set(name, body.replace(/\\xspace(?![a-zA-Z@])/g, ""));
+  }
+  return macros;
+}
+
+export function expandTextMacros(src: string, macros: Map<string, string>): string {
+  if (!macros.size) return src;
+  const names = [...macros.keys()].sort((a, b) => b.length - a.length).map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+  const re = new RegExp(`\\\\(${names.join("|")})(?![a-zA-Z@])(\\{\\})?`, "g");
+  let out = src;
+  for (let pass = 0; pass < 3; pass++) {
+    const next = out.replace(re, (_m, name: string) => `{${macros.get(name)}}`);
+    if (next === out) break;
+    out = next;
+  }
+  return out;
+}
+
+const WORD_RE = /[\p{L}\p{N}]+(?:['’\-.][\p{L}\p{N}]+|(?<=\p{N}),\p{N}{3}(?!\p{N}))*/gu;
 
 export function countWordsInText(s: string): number {
   return s.match(WORD_RE)?.length ?? 0;
@@ -297,26 +361,37 @@ export function countLatex(source: string, options: CountOptions = {}): CountRes
 
   const emit = (bucket: Bucket, t: string) => {
     sections[sections.length - 1].chunks[bucket].push(t);
-    if (abstractDepth > 0) abstractChunks.push(t);
+    // The abstract count is its running text only (a footnote inside the abstract is not part of it).
+    if (abstractDepth > 0 && bucket === "text") abstractChunks.push(t);
   };
+
+  const macros = collectTextMacros(src);
 
   // Title (often in the preamble) counts as a header of the front matter.
   const titleMatch = /\\title\s*(?:\[[^\]]*\])?\s*\{/.exec(src);
   let titleText = "";
   if (titleMatch) {
     const start = titleMatch.index + titleMatch[0].length - 1;
-    titleText = src.slice(start + 1, skipGroup(src, start) - 1);
+    titleText = expandTextMacros(src.slice(start + 1, skipGroup(src, start) - 1), macros);
   }
 
   // Restrict to the document body when there is one.
   const begin = /\\begin\s*\{document\}/.exec(src);
   if (begin) {
     const endDoc = src.indexOf("\\end{document}", begin.index);
+    const preamble = src.slice(0, begin.index);
     src = src.slice(begin.index + begin[0].length, endDoc >= 0 ? endDoc : undefined);
+    // JCAP/JHEP-style classes take \abstract{...} in the preamble; count it as if it opened the body.
+    const pre = /\\abstract\s*\{/.exec(preamble);
+    if (pre && !/\\begin\s*\{abstract\}|\\abstract\s*\{/.test(src)) {
+      const open = pre.index + pre[0].length - 1;
+      src = `\\abstract{${preamble.slice(open + 1, skipGroup(preamble, open) - 1)}}\n${src}`;
+    }
   } else {
     // Snippet: drop a preamble if pasted without \begin{document}.
     src = src.replace(/\\documentclass[\s\S]*?(?=\\section|\\chapter|\\begin\{abstract\}|$)/, "");
   }
+  src = expandTextMacros(src, macros);
   if (!includeAppendix) {
     const app = src.search(/\\appendix(?![a-zA-Z])|\\begin\s*\{appendices\}/);
     if (app >= 0) src = src.slice(0, app);
@@ -398,8 +473,9 @@ export function countLatex(source: string, options: CountOptions = {}): CountRes
       let j = i + 1 + name.length;
       const base = name.replace(/\*$/, "");
 
-      if (base === "verb" || base === "lstinline") {
-        const k = s[j] === "[" ? skipGroup(s, j) : j;
+      if (base === "verb" || base === "Verb" || base === "lstinline" || base === "mintinline") {
+        let k = s[j] === "[" ? skipGroup(s, j) : j;
+        if (base === "mintinline" && s[k] === "{") k = skipGroup(s, k); // language argument
         const delim = s[k] === "{" ? "}" : s[k];
         const end = s.indexOf(delim, k + 1);
         i = end < 0 ? s.length : end + 1;
@@ -522,6 +598,16 @@ export function countLatex(source: string, options: CountOptions = {}): CountRes
         const arg = readArg(s, j);
         i = arg ? arg[1] : j;
         sep();
+        continue;
+      }
+
+      if (base === "texorpdfstring") {
+        // \texorpdfstring{typeset}{bookmark text}: only the first argument is printed.
+        flush();
+        const a = readArg(s, j);
+        const b = a ? readArg(s, a[1]) : null;
+        if (a) walk(a[0], bucket);
+        i = b ? b[1] : a ? a[1] : j;
         continue;
       }
 

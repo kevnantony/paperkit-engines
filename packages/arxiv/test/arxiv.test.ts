@@ -44,6 +44,13 @@ describe("findCommentStart", () => {
     expect(findCommentStart("\\verb|50%| and \\verb+%+ x")).toBe(-1);
     expect(findCommentStart("\\verb*|a%b| % c")).toBe(12);
   });
+  it("ignores % inside inline code: \\lstinline, \\mintinline, \\Verb (cutting there breaks the build)", () => {
+    expect(findCommentStart("use \\lstinline|x % 2| here")).toBe(-1);
+    expect(findCommentStart("use \\lstinline[language=C]{printf(\"%d\")} here % c")).toBe(46);
+    expect(findCommentStart("\\mintinline{python}|a % b| and \\mintinline{c}{x%y} % c")).toBe(51);
+    expect(findCommentStart("\\Verb|100%| % c")).toBe(12);
+    expect(findCommentStart("\\lstinlinex % c")).toBe(12); // a different control word
+  });
   it("does not confuse control words starting with url", () => {
     expect(findCommentStart("\\urlstyle{same} % c")).toBe(16);
   });
@@ -142,6 +149,10 @@ describe("findMainTex", () => {
     expect(r.main).toBe("paper.tex");
     expect(r.candidates).toEqual(["paper.tex", "fig/standalone.tex"]);
   });
+  it("accepts a LaTeX 2.09 \\documentstyle main file (older arXiv papers still use it)", () => {
+    const r = findMainTex({ "paper.tex": "\\documentstyle[12pt,epsf]{article}\n\\begin{document}\\input{body}\\end{document}", "body.tex": "x" });
+    expect(r.main).toBe("paper.tex");
+  });
 });
 
 describe("resolveProject", () => {
@@ -226,18 +237,73 @@ describe("resolveProject", () => {
 });
 
 describe("planCleanup", () => {
-  it("warns when the .bbl is missing", () => {
+  it("keeps the used .bib when the .bbl is missing, because arXiv then runs BibTeX/Biber on it", () => {
+    // arXiv's submit_tex help: it uses the .bbl if present, otherwise runs bibtex/biber; a missing .bib blocks the submission.
+    const files = [
+      { path: "main.tex", size: 10 },
+      { path: "refs.bib", size: 10 },
+      { path: "old.bib", size: 10 },
+    ];
+    const texts = { "main.tex": "\\documentclass{article}\\bibliography{refs}" };
+    const plan = planCleanup(files, texts);
+    const w = plan.warnings.find((x) => x.code === "missing-bbl")!;
+    expect(w.level).toBe("warning");
+    expect(w.message).toContain("main.bbl is missing");
+    expect(plan.entries.find((e) => e.path === "refs.bib")!.action).toBe("keep");
+    expect(plan.entries.find((e) => e.path === "old.bib")!.action).toBe("remove");
+    // With the .bbl present the .bib is not needed.
+    const withBbl = planCleanup([...files, { path: "main.bbl", size: 1 }], texts);
+    expect(withBbl.entries.find((e) => e.path === "refs.bib")!.action).toBe("remove");
+    expect(withBbl.warnings.map((x) => x.code)).not.toContain("missing-bbl");
+    const keep = planCleanup([...files, { path: "main.bbl", size: 1 }], texts, { ...defaultCleanOptions, keepBib: true });
+    expect(keep.entries.find((e) => e.path === "refs.bib")!.action).toBe("keep");
+  });
+  it("is a danger when neither the .bbl nor the .bib is there (arXiv blocks the submission)", () => {
+    const plan = planCleanup([{ path: "main.tex", size: 10 }], { "main.tex": "\\documentclass{article}\\bibliography{refs}" });
+    expect(plan.warnings.find((x) => x.code === "missing-bbl")!.level).toBe("danger");
+  });
+  it("keeps .tex files read through a macro built on the \\@@input primitive", () => {
+    // Real cs.CL e-print: \newcommand{\tablerows}[1]{\@@input #1.tex } then \tablerows{serving_rows} inside a tabular.
+    // Both row files were removed as "not included", which breaks the arXiv build.
+    const texts = {
+      "main.tex": [
+        "\\documentclass{article}",
+        "\\makeatletter\\newcommand{\\tablerows}[1]{\\@@input #1.tex }\\makeatother",
+        "\\begin{document}",
+        "\\begin{tabular}{ll}\\tablerows{serving_rows}\\end{tabular}",
+        "\\begin{tabular}{ll}\\tablerows{demo_runs}\\end{tabular}",
+        "\\end{document}",
+      ].join("\n"),
+      "serving_rows.tex": "a & b \\\\",
+      "demo_runs.tex": "c & d \\\\",
+      "old_rows.tex": "e & f \\\\",
+    };
+    const plan = planCleanup(Object.keys(texts).map((p) => ({ path: p, size: 1 })), texts);
+    const act = (p: string) => plan.entries.find((e) => e.path === p)!.action;
+    expect(act("serving_rows.tex")).toBe("keep");
+    expect(act("demo_runs.tex")).toBe("keep");
+    expect(act("old_rows.tex")).toBe("remove");
+    expect(plan.warnings.map((w) => w.code)).toContain("macro-path");
+    // \@@input with a literal name is a normal include.
+    const g = resolveProject("m.tex", { "m.tex": "\\documentclass{article}\\makeatletter\\@@input body.tex \\makeatother" }, ["m.tex", "body.tex"]);
+    expect(g.used.has("body.tex")).toBe(true);
+  });
+  it("keeps arXiv ancillary files in anc/", () => {
+    // A real cs.LG e-print ships anc/Supplementary.pdf; it was dropped as an "unused figure".
     const plan = planCleanup(
       [
-        { path: "main.tex", size: 10 },
-        { path: "refs.bib", size: 10 },
+        { path: "paper/main.tex", size: 10 },
+        { path: "paper/anc/Supplementary.pdf", size: 10 },
+        { path: "paper/anc/code/train.py", size: 10 },
+        { path: "paper/figs/anc/old.png", size: 10 },
       ],
-      { "main.tex": "\\documentclass{article}\\bibliography{refs}" },
+      { "paper/main.tex": "\\documentclass{article}\\begin{document}x\\end{document}", "paper/anc/code/train.py": "print(1)" },
+      { ...defaultCleanOptions, removeUnreferenced: true },
     );
-    expect(plan.warnings.some((w) => w.code === "missing-bbl" && w.level === "danger")).toBe(true);
-    expect(plan.entries.find((e) => e.path === "refs.bib")!.action).toBe("remove");
-    const keep = planCleanup([{ path: "main.tex", size: 1 }, { path: "refs.bib", size: 1 }], { "main.tex": "\\documentclass{article}\\bibliography{refs}" }, { ...defaultCleanOptions, keepBib: true });
-    expect(keep.entries.find((e) => e.path === "refs.bib")!.action).toBe("keep");
+    const act = (p: string) => plan.entries.find((e) => e.path === p)!.action;
+    expect(act("paper/anc/Supplementary.pdf")).toBe("keep");
+    expect(act("paper/anc/code/train.py")).toBe("keep");
+    expect(act("paper/figs/anc/old.png")).toBe("remove");
   });
   it("keeps everything but junk when there is no main file", () => {
     const plan = planCleanup([{ path: "a.tex", size: 1 }, { path: "a.aux", size: 1 }], { "a.tex": "hello" });
@@ -280,6 +346,14 @@ describe("cleanProject on the fixture zip (golden)", async () => {
     expect(codes).toContain("missing-file");
     expect(codes).toContain("case-mismatch");
     expect(codes).not.toContain("missing-bbl");
+  });
+  it("does not claim a case mismatch breaks the arXiv build", () => {
+    // Two real arXiv papers (\input{Proofs} → proofs.tex, \input{Preamble} → preamble.tex) build fine on arXiv:
+    // TeX Live's kpathsea falls back to a case-insensitive lookup. The warning must stay, but not overstate it.
+    const w = result.plan.warnings.find((x) => x.code === "case-mismatch")!;
+    expect(w.message).toContain("ignoring case");
+    expect(w.message).not.toMatch(/will fail/);
+    expect(w.level).toBe("warning");
   });
   it("produces a zip with stripped .tex and untouched .sty", async () => {
     const out = await JSZip.loadAsync(result.output);

@@ -1,6 +1,6 @@
 {
   "name": "@paperkit-latex/arxiv",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Prepare LaTeX sources for arXiv: strip comments safely, resolve the include graph, plan and apply cleanup on a zip.",
   "keywords": [
     "arxiv",
