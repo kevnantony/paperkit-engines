@@ -4,6 +4,7 @@ import {
   normalizeDoi,
   normalizeTitle,
   parseBibtex,
+  plainText,
   serializeEntry,
   serializeItem,
   titleSimilarity,
@@ -147,13 +148,23 @@ export function findDuplicates(files: SourceFile[], opts: FindOptions = { thresh
     }
   };
 
-  // 1. Exact DOI (arXiv DOIs 10.48550/... excluded: they never match a journal DOI anyway).
+  const people = candidates.map((c) => personTokens(c.entry));
+  /** Both author lists known and without a single surname in common: written by different people. */
+  const differentPeople = (i: number, j: number) => {
+    if (!people[i].size || !people[j].size) return false;
+    for (const t of people[i]) if (people[j].has(t)) return false;
+    return true;
+  };
+
+  // 1. Exact DOI (arXiv DOIs 10.48550/... excluded: they never match a journal DOI anyway). A shared DOI
+  // on two entries with unrelated titles AND unrelated authors is a data error (e.g. two letters in one
+  // journal column given the column's DOI), not a duplicate: merging would silently drop a paper.
   const byDoi = new Map<string, number>();
   for (const c of candidates) {
     if (!c.doi) continue;
     const prev = byDoi.get(c.doi);
     if (prev === undefined) byDoi.set(c.doi, c.id);
-    else link(prev, c.id, "doi", 1);
+    else if (titlesRelated(candidates[prev].title, c.title) || !differentPeople(prev, c.id)) link(prev, c.id, "doi", 1);
   }
 
   // 2. Title similarity, with arXiv-vs-published pairs called out.
@@ -166,6 +177,8 @@ export function findDuplicates(files: SourceFile[], opts: FindOptions = { thresh
     if (a.doi && b.doi && a.doi !== b.doi && !a.arxiv && !b.arxiv) continue;
     // Part I / Part II, 2019 / 2020 proceedings, or different years: different works.
     if (markers[i] !== markers[j] || !yearsCompatible(a, b)) continue;
+    // Same title, completely different authors: different works ("Introduction", "Editorial", replies).
+    if (differentPeople(i, j) || distinctPlacement(a.entry, b.entry)) continue;
     const sim = titleSimilarityAtLeast(a.title, b.title, opts.threshold, sets[i], sets[j]);
     if (!sim) continue;
     if (a.arxiv !== b.arxiv) link(i, j, "arxiv-published", sim);
@@ -213,16 +226,18 @@ export function findDuplicates(files: SourceFile[], opts: FindOptions = { thresh
 
 const ROMAN = /^(?=[ivxlc])c{0,3}(?:xc|xl|l?x{0,3})(?:ix|iv|v?i{0,3})$/;
 const SERIES_WORDS = new Set(["part", "volume", "vol", "chapter"]);
+const MONTH_WORDS = new Set("january february march april june july august september october november december".split(" "));
 
 /**
  * Tokens that tell apart works in a series: numbers (years, editions, ResNet-50/101), roman numerals,
- * and the word after "part" / "volume" / "vol" / "chapter". Titles are only linked when these match.
+ * month names (journal issues), and the word after "part" / "volume" / "vol" / "chapter". Titles are only
+ * linked when these match.
  */
 export function seriesMarkers(title: string): string {
   const toks = title.split(" ");
   const out: string[] = [];
   toks.forEach((t, i) => {
-    if (/\d/.test(t) || ROMAN.test(t) || (i > 0 && SERIES_WORDS.has(toks[i - 1]))) out.push(t);
+    if (/\d/.test(t) || ROMAN.test(t) || MONTH_WORDS.has(t) || (i > 0 && SERIES_WORDS.has(toks[i - 1]))) out.push(t);
   });
   return out.sort().join(" ");
 }
@@ -240,8 +255,19 @@ function yearsCompatible(a: Candidate, b: Candidate): boolean {
  * Jaccard >= 0.5 must share a token within the first |A| - ceil(|A|/2) + 1 tokens. This keeps large
  * bibliographies (thousands of entries) fast without missing any match at thresholds >= 0.5.
  */
+/**
+ * Title length in Latin-letter units, used to ignore titles too short to compare ("Preface", "Reviews").
+ * Han, kana and Hangul characters each carry roughly a word's meaning, so a 6-character Japanese title
+ * ("機械学習入門") is not "short".
+ */
+export function titleWeight(title: string): number {
+  let n = 0;
+  for (const ch of title) n += /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u.test(ch) ? 3 : 1;
+  return n;
+}
+
 function candidatePairs(cands: Candidate[]): [number, number][] {
-  const tokens = cands.map((c) => (c.title.length >= 8 ? [...new Set(c.title.split(" "))] : []));
+  const tokens = cands.map((c) => (titleWeight(c.title) >= 8 ? [...new Set(c.title.split(" "))] : []));
   const df = new Map<string, number>();
   for (const ts of tokens) for (const t of ts) df.set(t, (df.get(t) ?? 0) + 1);
   const index = new Map<string, number[]>();
@@ -268,9 +294,75 @@ function candidatePairs(cands: Candidate[]): [number, number][] {
   return out.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
 }
 
-/** Prefer the published version, then the entry with most fields, then the first one seen. */
+/**
+ * Prefer a complete entry (title, author or editor, year), then the published version, then the entry with
+ * most fields, then the first one seen. A bare "title + URL" stub is never preferred over a full record.
+ */
 export function suggestKeep(members: Candidate[]): number {
-  return [...members].sort((a, b) => Number(a.arxiv) - Number(b.arxiv) || b.fieldCount - a.fieldCount || a.id - b.id)[0].id;
+  const complete = (c: Candidate) =>
+    Number(Boolean(c.title && c.year && c.entry.fields.some((f) => (f.name === "author" || f.name === "editor") && valueText(f.value).trim())));
+  return [...members].sort(
+    (a, b) => complete(b) - complete(a) || Number(a.arxiv) - Number(b.arxiv) || b.fieldCount - a.fieldCount || a.id - b.id,
+  )[0].id;
+}
+
+const NAME_NOISE = new Set(["and", "others", "et", "al", "von", "van", "der", "den", "de", "la", "le", "di", "da", "del", "jr", "sr"]);
+
+/**
+ * Lower-case name words (initials and particles dropped) of the authors, or of the editors when there are
+ * no authors. Editors of an @inproceedings are the volume's editors, shared by every paper in it.
+ */
+function personTokens(entry: BibEntry): Set<string> {
+  const names = getField(entry, "author")?.trim() || getField(entry, "editor") || "";
+  return new Set(plainText(names).split(" ").filter((t) => t.length > 1 && !NAME_NOISE.has(t)));
+}
+
+/**
+ * Two items in the same journal or proceedings but at a different volume, issue or page range are different
+ * items, even with the same title ("Advertisements", "Book Reviews", "Concluding Remarks" in every issue).
+ */
+function distinctPlacement(a: BibEntry, b: BibEntry): boolean {
+  // Anonymous items (front matter, proceedings volumes) on two different pages of the same site:
+  // aclanthology.org/J87-1024 vs /J87-3015. Not used when authors are known: one paper often has several
+  // URL forms on one site (dl.acm.org/doi/X vs /doi/abs/X), and the author check already separates works.
+  const anonymous = (e: BibEntry) => !getField(e, "author")?.trim();
+  const ua = normalizeUrl(getField(a, "url"));
+  const ub = normalizeUrl(getField(b, "url"));
+  if (anonymous(a) && anonymous(b) && ua && ub && ua !== ub && ua.split("/")[0] === ub.split("/")[0]) return true;
+  const venue = (e: BibEntry) => plainText(getField(e, "journal") ?? getField(e, "journaltitle") ?? getField(e, "booktitle") ?? "");
+  const va = venue(a);
+  if (!va || va !== venue(b)) return false;
+  const differs = (name: string, norm: (s: string) => string = (s) => plainText(s)) => {
+    const x = getField(a, name);
+    const y = getField(b, name);
+    return Boolean(x?.trim() && y?.trim() && norm(x) !== norm(y));
+  };
+  return (
+    differs("volume") ||
+    differs("number") ||
+    differs("issue") ||
+    differs("pages", (s) => s.replace(/[\s\-\u2010-\u2015]+/g, "-").toLowerCase())
+  );
+}
+
+/** "https://www.arxiv.org/pdf/1706.03762v5.pdf" → "arxiv.org/1706.03762"; "" when there is no URL. */
+function normalizeUrl(url: string | undefined): string {
+  if (!url?.trim()) return "";
+  return url
+    .trim()
+    .toLowerCase()
+    .replace(/^https?:\/\/(www\.)?/, "")
+    .replace(/^dx\.doi\.org\//, "doi.org/")
+    .replace(/[?#].*$/, "")
+    .replace(/\/+$/, "")
+    .replace(/\.pdf$/, "")
+    .replace(/^(export\.)?arxiv\.org\/(?:abs|pdf|html)\/(.+?)(?:v\d+)?$/, "arxiv.org/$2");
+}
+
+/** Titles that plausibly describe the same work: one missing, one containing the other, or similar words. */
+function titlesRelated(a: string, b: string): boolean {
+  if (!a || !b || a.includes(b) || b.includes(a)) return true;
+  return titleSimilarity(a, b) >= 0.5;
 }
 
 /** Group id → candidate id to keep, or "all" to keep every member (not actually duplicates). */

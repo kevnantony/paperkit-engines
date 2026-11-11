@@ -1,6 +1,6 @@
 {
   "name": "@paperkit-latex/bibtex",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "BibTeX parser, serializer, cleaner, duplicate finder and DOI/arXiv to BibTeX lookup. Runs in Node and the browser.",
   "keywords": [
     "bibtex",

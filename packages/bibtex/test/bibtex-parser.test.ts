@@ -149,9 +149,20 @@ describe("text helpers", () => {
   });
 
   it("strips LaTeX for comparison", () => {
-    expect(plainText("{\\\"O}zt{\\\"u}rk and Ka\\v{c}er: {BERT} \\emph{rocks} $x^2$")).toBe("ozturk and kacer bert rocks");
+    expect(plainText("{\\\"O}zt{\\\"u}rk and Ka\\v{c}er: {BERT} \\emph{rocks} $x^2$")).toBe("ozturk and kacer bert rocks x 2");
     expect(plainText("Stra{\\ss}e")).toBe("strasse");
     expect(plainText("Café Économie")).toBe("cafe economie");
+  });
+
+  it("keeps words that tell titles apart: logos, math, \\&, non-Latin scripts", () => {
+    // Real pairs from Beebe's texbook1.bib and biblatex-examples.bib that used to compare equal.
+    expect(plainText("{\\TeX}: The Program")).not.toBe(plainText("{\\METAFONT}: The Program"));
+    expect(plainText("The {\\TeX}book")).toBe("the tex book");
+    expect(plainText("$\\alpha$-divergence")).not.toBe(plainText("$\\beta$-divergence"));
+    expect(plainText("An $O(n)$ algorithm")).not.toBe(plainText("An $O(n^2)$ algorithm"));
+    expect(plainText("Computers \\& Typesetting")).toBe(plainText("Computers and Typesetting"));
+    expect(plainText("\\textbf{Deep} \\textit{learning}\\textendash{}a survey")).toBe("deep learning a survey");
+    expect(plainText("Нейронные сети BERT")).toMatch(/^не.ронные сети bert$/);
   });
 
   it("normalizes DOIs", () => {

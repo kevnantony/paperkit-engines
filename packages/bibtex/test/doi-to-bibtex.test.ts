@@ -35,7 +35,12 @@ describe("parseIdentifier", () => {
     ["https://arxiv.org/abs/1706.03762v7", { kind: "arxiv", id: "1706.03762", version: "v7" }],
     ["https://arxiv.org/pdf/1706.03762.pdf", { kind: "arxiv", id: "1706.03762", version: undefined }],
     ["hep-th/9901001", { kind: "arxiv", id: "hep-th/9901001", version: undefined }],
-    ["arxiv.org/abs/math.GT/0309136", { kind: "arxiv", id: "math.GT/0309136", version: undefined }],
+    // The subject class is not part of an old-style ID: the arXiv API only knows "math/0309136".
+    ["arxiv.org/abs/math.GT/0309136", { kind: "arxiv", id: "math/0309136", version: undefined }],
+    ["math.GT/0309136v2", { kind: "arxiv", id: "math/0309136", version: "v2" }],
+    ["HEP-TH/9901001", { kind: "arxiv", id: "hep-th/9901001", version: undefined }],
+    ["arXiv:1706.03762.", { kind: "arxiv", id: "1706.03762", version: undefined }],
+    ["10.48550/arXiv.hep-th/9901001", { kind: "arxiv", id: "hep-th/9901001", version: undefined }],
     ["10.48550/arXiv.2101.00001", { kind: "arxiv", id: "2101.00001", version: undefined }],
   ])("recognizes %s", (input, expected) => {
     expect(parseIdentifier(input)).toEqual(expected);
@@ -95,7 +100,7 @@ describe("network lookups (mocked fetch)", () => {
     const progress: number[] = [];
     const results = await resolveAll(
       parseInput("10.1145/3292500.3330701\narXiv:1706.03762v2\n2101.99999\n10.9999/missing\nhello\n10.5555/down\n10.1145/3292500.3330701"),
-      { fetch, onProgress: (d) => progress.push(d) },
+      { fetch, onProgress: (d) => progress.push(d), retry: { sleep: async () => {} } },
     );
     expect(results.map((r) => [r.line, r.status, r.message])).toEqual([
       [1, "ok", "doi.org"],
@@ -153,6 +158,47 @@ describe("network lookups (mocked fetch)", () => {
     for (const [url] of fetch.mock.calls) {
       expect(url).toMatch(/^https:\/\/(doi\.org\/10\.|export\.arxiv\.org\/api\/query\?id_list=)/);
     }
+  });
+});
+
+describe("rate limiting (doi.org / Crossref answer 429 to bursts)", () => {
+  const ok = { status: 200, body: "@article{K_2020, title={T}, author={Doe, Jane}, year={2020}}" };
+  const noWait = { delays: [1, 1, 1], sleep: async () => {} };
+
+  it("retries a 429 and succeeds", async () => {
+    let n = 0;
+    const fetch = mockFetch(() => (++n < 3 ? { status: 429, body: "" } : ok));
+    const [r] = await resolveAll(parseInput("10.1000/a"), { fetch, retry: noWait });
+    expect(r.status).toBe("ok");
+    expect(fetch).toHaveBeenCalledTimes(3);
+  });
+
+  it("gives up after the last retry with a clear message", async () => {
+    const fetch = mockFetch(() => ({ status: 429, body: "" }));
+    const [r] = await resolveAll(parseInput("10.1000/a"), { fetch, retry: noWait });
+    expect(r).toMatchObject({ status: "failed", message: "Too many requests to doi.org: wait a minute and try again" });
+    expect(fetch).toHaveBeenCalledTimes(4);
+  });
+
+  it("does not retry a 404", async () => {
+    const fetch = mockFetch(() => ({ status: 404, body: "" }));
+    const [r] = await resolveAll(parseInput("10.1000/a"), { fetch, retry: noWait });
+    expect(r.message).toBe("DOI not found");
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("stops waiting when the user cancels", async () => {
+    const fetch = mockFetch(() => ({ status: 429, body: "" }));
+    const ctrl = new AbortController();
+    const p = fetchDoi("10.1/a", fetch, ctrl.signal, { delays: [60_000] });
+    ctrl.abort();
+    await expect(p).rejects.toMatchObject({ name: "AbortError" });
+  });
+
+  it("keeps a DataCite corporate author with a trailing comma together", () => {
+    // doi.org/10.5281/zenodo.3509134 returns: author = {The pandas development team, }
+    expect(normalizeNameList("The pandas development team, ")).toBe("{The pandas development team}");
+    expect(normalizeNameList("Smith, ")).toBe("Smith");
   });
 });
 

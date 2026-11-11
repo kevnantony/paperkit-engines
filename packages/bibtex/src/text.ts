@@ -49,21 +49,39 @@ const ACCENTS: Record<string, string> = { ss: "ss", o: "o", O: "O", l: "l", L: "
   v: "", u: "", H: "", c: "", d: "", b: "", t: "", k: "", r: "",
 };
 
+/** Formatting, spacing and punctuation commands that carry no words of their own. */
+const DROP_COMMANDS = new Set(
+  (
+    "emph textbf textit textsc textrm textsf texttt textup textsl textmd textnormal textsuperscript textsubscript mbox hbox makebox " +
+    "em it bf sc rm sf tt sl up md normalfont small large Large LARGE huge Huge footnotesize scriptsize tiny normalsize " +
+    "url href nolinkurl doi cite ensuremath mathrm mathbf mathit mathcal mathsf mathtt mathbb mathfrak mathscr boldsymbol bm text " +
+    "uppercase lowercase MakeUppercase MakeLowercase MakeTextUppercase MakeTextLowercase relax protect noopsort switchargs " +
+    "bibinfo newblock xspace textendash textemdash textquoteright textquoteleft textquotedblleft textquotedblright " +
+    "textquotesingle textasciitilde textbackslash ldots dots cdots textellipsis slash nobreakspace quad qquad hspace vspace " +
+    "kern enspace thinspace left right bigl bigr Bigl Bigr acro acs ac ignorespaces"
+  ).split(" "),
+);
+
 /**
- * Reduce LaTeX-ish text to plain lowercase ASCII words: strips braces, accent commands (\"{o}, {\'e}),
- * math, and diacritics. Used for comparing titles and building citation keys.
+ * Reduce LaTeX-ish text to plain lowercase words: strips braces, accent commands (\"{o}, {\'e}),
+ * formatting commands and diacritics (Latin text becomes ASCII; other scripts are kept). Used for comparing
+ * titles and building citation keys.
  */
 export function plainText(input: string): string {
   let s = input;
-  s = s.replace(/\$[^$]*\$/g, " ");
-  s = s.replace(/\\([a-zA-Z]+)\s*(?=[{}\s\\]|$)/g, (_, cmd: string) => (cmd in ACCENTS ? ACCENTS[cmd] : " "));
+  // Math is kept as words: "$O(n)$" and "$O(n^2)$", or "$\\alpha$-" and "$\\beta$-divergence", are different titles.
+  s = s.replace(/\$([^$]*)\$/g, " $1 ");
+  s = s.replace(/\\&/g, " and ");
+  // Accent commands keep their letter; formatting and punctuation commands disappear; any other command
+  // (\TeX, \METAFONT, \alpha) is a word of the title.
+  s = s.replace(/\\([a-zA-Z]+)\s*/g, (_, cmd: string) => (cmd in ACCENTS ? ACCENTS[cmd] : DROP_COMMANDS.has(cmd) ? " " : ` ${cmd} `));
   s = s.replace(/\\[^a-zA-Z\s]/g, "");
-  s = s.replace(/\\[a-zA-Z]+/g, " ");
   s = s.replace(/[{}]/g, "");
   s = s.normalize("NFKD").replace(/[̀-ͯ]/g, "");
   s = s.replace(/ß/g, "ss").replace(/[æ]/g, "ae").replace(/[ø]/g, "o").replace(/[łŁ]/g, "l");
   s = s.toLowerCase().replace(/&amp;/g, " and ").replace(/&/g, " and ");
-  s = s.replace(/[^a-z0-9]+/g, " ");
+  // Letters of any script count (two Cyrillic or Greek titles that share a few Latin words are not equal).
+  s = s.replace(/[^\p{L}\p{N}]+/gu, " ");
   return s.trim().replace(/\s+/g, " ");
 }
 
@@ -103,7 +121,11 @@ export function splitNames(input: string): string[] {
     }
   }
   out.push(input.slice(start));
-  return out.map((n) => n.trim().replace(/\s+/g, " ")).filter(Boolean);
+  // A doubled or dangling "and" ("Tu and and Gerald Tesauro", "Smith and") leaves an empty name next to
+  // it; drop the stray "and" instead of reading it as part of a name.
+  return out
+    .map((n) => n.trim().replace(/\s+/g, " ").replace(/^(?:and(?:\s+|$))+/i, "").replace(/(?:(?:^|\s+)and)+$/i, ""))
+    .filter(Boolean);
 }
 
 export function normalizeDoi(doi: string | undefined): string | undefined {
@@ -134,7 +156,7 @@ export function isArxivEntry(entry: BibEntry): boolean {
   if (/arxiv|corr\b|preprint/.test(venue)) return true;
   if (prefix === "arxiv" && !journal && !getField(entry, "booktitle")) return true;
   if (entry.type === "misc" || entry.type === "unpublished" || entry.type === "online") {
-    if (getField(entry, "eprint") || /arxiv\.org/i.test(getField(entry, "url") ?? "")) return true;
+    if (getField(entry, "eprint") || /arxiv\.org/i.test(`${getField(entry, "url") ?? ""} ${getField(entry, "howpublished") ?? ""}`)) return true;
   }
   return false;
 }

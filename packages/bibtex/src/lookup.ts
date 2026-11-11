@@ -16,18 +16,21 @@ export interface InputLine {
 export function parseIdentifier(raw: string): Identifier | null {
   const s = raw.trim().replace(/^<|>$/g, "");
   if (!s) return null;
+  const arxiv = (m: RegExpExecArray): Identifier => ({ kind: "arxiv", id: canonicalArxivId(m[1]), version: m[2] });
 
   // arXiv URLs and prefixed IDs first: arxiv.org/abs/2101.00001v2, arXiv:2101.00001, arxiv.org/pdf/hep-th/9901001
   const arxivUrl = /arxiv\.org\/(?:abs|pdf|html)\/([a-z-]+(?:\.[A-Z]{2})?\/\d{7}|\d{4}\.\d{4,5})(v\d+)?/i.exec(s);
-  if (arxivUrl) return { kind: "arxiv", id: arxivUrl[1], version: arxivUrl[2] };
-  const arxivPrefixed = /^arxiv\s*:\s*([a-z-]+(?:\.[A-Z]{2})?\/\d{7}|\d{4}\.\d{4,5})(v\d+)?$/i.exec(s);
-  if (arxivPrefixed) return { kind: "arxiv", id: arxivPrefixed[1], version: arxivPrefixed[2] };
-  const arxivBare = /^(\d{4}\.\d{4,5}|[a-z-]+(?:\.[A-Z]{2})?\/\d{7})(v\d+)?$/i.exec(s);
-  if (arxivBare) return { kind: "arxiv", id: arxivBare[1], version: arxivBare[2] };
+  if (arxivUrl) return arxiv(arxivUrl);
+  // A trailing full stop or comma (pasted from a sentence or a reference list) is not part of the ID.
+  const t = s.replace(/[.,;]+$/, "");
+  const arxivPrefixed = /^arxiv\s*:\s*([a-z-]+(?:\.[A-Z]{2})?\/\d{7}|\d{4}\.\d{4,5})(v\d+)?$/i.exec(t);
+  if (arxivPrefixed) return arxiv(arxivPrefixed);
+  const arxivBare = /^(\d{4}\.\d{4,5}|[a-z-]+(?:\.[A-Z]{2})?\/\d{7})(v\d+)?$/i.exec(t);
+  if (arxivBare) return arxiv(arxivBare);
 
-  // arXiv's own DOI (10.48550/arXiv.2101.00001) is better served by the arXiv API.
-  const arxivDoi = /10\.48550\/arxiv\.(\d{4}\.\d{4,5})(v\d+)?/i.exec(s);
-  if (arxivDoi) return { kind: "arxiv", id: arxivDoi[1], version: arxivDoi[2] };
+  // arXiv's own DOI (10.48550/arXiv.2101.00001, 10.48550/arXiv.hep-th/9901001) is better served by the arXiv API.
+  const arxivDoi = /10\.48550\/arxiv\.(\d{4}\.\d{4,5}|[a-z-]+(?:\.[A-Z]{2})?\/\d{7})(v\d+)?/i.exec(s);
+  if (arxivDoi) return arxiv(arxivDoi);
 
   const doi = /(10\.\d{4,9}\/\S+)/.exec(s.replace(/^doi\s*:\s*/i, ""));
   if (doi) {
@@ -40,6 +43,16 @@ export function parseIdentifier(raw: string): Identifier | null {
     return { kind: "doi", id };
   }
   return null;
+}
+
+/**
+ * arXiv's identifier for an old-style paper is "archive/YYMMNNN": the subject class shown in listings
+ * ("math.GT/0309136") is not part of it, and the API answers under "math/0309136". Archive names are
+ * lower case ("HEP-TH/9901001" → "hep-th/9901001").
+ */
+function canonicalArxivId(id: string): string {
+  const old = /^([a-z-]+)(?:\.[a-z]{2})?\/(\d{7})$/i.exec(id);
+  return old ? `${old[1].toLowerCase()}/${old[2]}` : id;
 }
 
 export function parseInput(text: string): InputLine[] {
@@ -70,16 +83,49 @@ export interface LookupResult {
 
 export class LookupError extends Error {}
 
-export async function fetchDoi(doi: string, fetchImpl: FetchLike, signal?: AbortSignal): Promise<BibEntry> {
+export interface RetryOptions {
+  /** Waits before each retry of a rate-limited (429) or temporarily unavailable (502/503/504) request. */
+  delays?: number[];
+  /** Injectable for tests. Must reject with an AbortError when `signal` aborts. */
+  sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
+}
+
+/** Crossref (behind doi.org) answers 429 when a burst of lookups exceeds its public rate limit. */
+const DEFAULT_RETRY_DELAYS = [1000, 2500, 5000, 10000];
+const RETRY_STATUS = new Set([429, 502, 503, 504]);
+
+function sleepFor(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const abort = () => {
+      clearTimeout(t);
+      reject(signal?.reason instanceof Error ? signal.reason : Object.assign(new Error("Aborted"), { name: "AbortError" }));
+    };
+    const t = setTimeout(() => {
+      signal?.removeEventListener("abort", abort);
+      resolve();
+    }, ms);
+    if (signal?.aborted) abort();
+    else signal?.addEventListener("abort", abort, { once: true });
+  });
+}
+
+export async function fetchDoi(doi: string, fetchImpl: FetchLike, signal?: AbortSignal, retry: RetryOptions = {}): Promise<BibEntry> {
   const url = `https://doi.org/${doi.split("/").map(encodeURIComponent).join("/")}`;
+  const delays = retry.delays ?? DEFAULT_RETRY_DELAYS;
+  const sleep = retry.sleep ?? sleepFor;
   let res;
-  try {
-    res = await fetchImpl(url, { headers: { Accept: "application/x-bibtex; charset=utf-8" }, signal });
-  } catch (e) {
-    if (isAbort(e)) throw e;
-    throw new LookupError("Network error: check your connection");
+  for (let attempt = 0; ; attempt++) {
+    try {
+      res = await fetchImpl(url, { headers: { Accept: "application/x-bibtex; charset=utf-8" }, signal });
+    } catch (e) {
+      if (isAbort(e)) throw e;
+      throw new LookupError("Network error: check your connection");
+    }
+    if (!RETRY_STATUS.has(res.status) || attempt >= delays.length) break;
+    await sleep(delays[attempt], signal);
   }
   if (res.status === 404) throw new LookupError("DOI not found");
+  if (res.status === 429) throw new LookupError("Too many requests to doi.org: wait a minute and try again");
   if (!res.ok) throw new LookupError(`doi.org answered HTTP ${res.status}`);
   const body = await res.text();
   const entry = parseBibtex(fixCrossrefText(body)).items.find((i): i is BibEntry => i.kind === "entry");
@@ -175,8 +221,8 @@ export function parseArxivAtom(xml: string): ArxivRecord[] {
  * Fallback for arXiv when the arXiv API is blocked by CORS: arXiv registers a DataCite DOI
  * (10.48550/arXiv.<id>) for every paper, and doi.org serves BibTeX for it with CORS enabled.
  */
-export async function fetchArxivViaDoi(id: string, fetchImpl: FetchLike, signal?: AbortSignal): Promise<BibEntry> {
-  const entry = await fetchDoi(`10.48550/arXiv.${id}`, fetchImpl, signal).catch((e) => {
+export async function fetchArxivViaDoi(id: string, fetchImpl: FetchLike, signal?: AbortSignal, retry: RetryOptions = {}): Promise<BibEntry> {
+  const entry = await fetchDoi(`10.48550/arXiv.${id}`, fetchImpl, signal, retry).catch((e) => {
     if (e instanceof LookupError && e.message === "DOI not found") throw new LookupError("arXiv ID not found");
     throw e;
   });
@@ -218,8 +264,9 @@ function isAbort(e: unknown): boolean {
 export interface ResolveOptions {
   fetch: FetchLike;
   signal?: AbortSignal;
-  /** Parallel DOI requests. Default 4. */
+  /** Parallel DOI requests. Default 2: doi.org/Crossref rate-limit bursts of anonymous requests. */
   concurrency?: number;
+  retry?: RetryOptions;
   onProgress?: (done: number, total: number) => void;
 }
 
@@ -245,9 +292,9 @@ export async function resolveAll(lines: InputLine[], opts: ResolveOptions): Prom
     } catch (e) {
       if (isAbort(e)) throw e;
       arxivSource = "DataCite DOI";
-      await pool(arxivIds, opts.concurrency ?? 4, async (id) => {
+      await pool(arxivIds, opts.concurrency ?? 2, async (id) => {
         try {
-          arxivEntries.set(id, await fetchArxivViaDoi(id, opts.fetch, opts.signal));
+          arxivEntries.set(id, await fetchArxivViaDoi(id, opts.fetch, opts.signal, opts.retry));
         } catch (err) {
           if (isAbort(err)) throw err;
           const reason = err instanceof LookupError ? err.message : "Lookup failed";
@@ -269,9 +316,9 @@ export async function resolveAll(lines: InputLine[], opts: ResolveOptions): Prom
 
   const doiLines = valid.filter((l) => l.ident!.kind === "doi");
   const doiCache = new Map<string, Promise<BibEntry>>();
-  await pool(doiLines, opts.concurrency ?? 4, async (l) => {
+  await pool(doiLines, opts.concurrency ?? 2, async (l) => {
     const id = l.ident!.id.toLowerCase();
-    if (!doiCache.has(id)) doiCache.set(id, fetchDoi(l.ident!.id, opts.fetch, opts.signal));
+    if (!doiCache.has(id)) doiCache.set(id, fetchDoi(l.ident!.id, opts.fetch, opts.signal, opts.retry));
     try {
       const entry = await doiCache.get(id)!;
       results.set(l.line, { line: l.line, input: l.input, status: "ok", message: "doi.org", entry });

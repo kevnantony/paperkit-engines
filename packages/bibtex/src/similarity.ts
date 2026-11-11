@@ -80,11 +80,14 @@ export function titleSimilarityAtLeast(a: string, b: string, t: number, setA?: S
   const B = setB ?? new Set(b.split(" "));
   let inter = 0;
   for (const x of A) if (B.has(x)) inter++;
-  const j = inter / (A.size + B.size - inter);
+  // Same words in a different order ("The Art of Computer Programming" / "The Programming of Computer Art")
+  // are not the same title: the word-set score only counts when the words appear in the same order.
+  const raw = inter / (A.size + B.size - inter);
+  const j = raw >= t && !sameWordOrder(a, b) ? 0 : raw;
   const maxLen = Math.max(a.length, b.length);
   const lenRatio = Math.min(a.length, b.length) / maxLen;
   // Edit-distance ratio can never exceed the length ratio.
-  if (lenRatio < 0.85 || j < 0.5 || lenRatio < t) return j >= t ? j : 0;
+  if (lenRatio < 0.85 || raw < 0.5 || lenRatio < t) return j >= t ? j : 0;
   const k = Math.floor((1 - t) * maxLen);
   const d = levenshteinBounded(a, b, k);
   const lev = d > k ? 0 : 1 - d / maxLen;
@@ -99,8 +102,25 @@ export function titleSimilarityAtLeast(a: string, b: string, t: number, setA?: S
 export function titleSimilarity(a: string, b: string): number {
   if (!a || !b) return 0;
   if (a === b) return 1;
-  const j = tokenJaccard(a, b);
+  const raw = tokenJaccard(a, b);
+  const j = raw >= 0.5 && !sameWordOrder(a, b) ? raw / 2 : raw;
   const lenRatio = Math.min(a.length, b.length) / Math.max(a.length, b.length);
-  if (lenRatio < 0.85 || j < 0.5) return j;
+  if (lenRatio < 0.85 || raw < 0.5) return j;
   return Math.max(j, levenshteinRatio(a, b));
+}
+
+/**
+ * True when the shared words of two titles appear in (nearly) the same order: the longest common
+ * subsequence of words covers at least 80% of the shorter title.
+ */
+export function sameWordOrder(a: string, b: string): boolean {
+  const A = a.split(" ");
+  const B = b.split(" ");
+  let prev = new Array<number>(B.length + 1).fill(0);
+  let cur = new Array<number>(B.length + 1).fill(0);
+  for (let i = 1; i <= A.length; i++) {
+    for (let j = 1; j <= B.length; j++) cur[j] = A[i - 1] === B[j - 1] ? prev[j - 1] + 1 : Math.max(prev[j], cur[j - 1]);
+    [prev, cur] = [cur, prev];
+  }
+  return prev[B.length] >= 0.8 * Math.min(A.length, B.length);
 }

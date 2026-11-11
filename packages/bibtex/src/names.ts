@@ -17,10 +17,27 @@ function isLowerToken(tok: string): boolean {
   return letter !== undefined && letter === letter.toLowerCase();
 }
 
+/** Split on top-level commas, keeping empty parts (", Lucas" is an empty last name, not "Lucas"). */
+function splitCommas(name: string): string[] {
+  const out: string[] = [];
+  let depth = 0;
+  let cur = "";
+  for (const ch of name) {
+    if (ch === "{") depth++;
+    if (ch === "}") depth = Math.max(0, depth - 1);
+    if (depth === 0 && ch === ",") {
+      out.push(cur.trim());
+      cur = "";
+    } else cur += ch;
+  }
+  out.push(cur.trim());
+  return out;
+}
+
 /** Parse one BibTeX name in any of the forms "First von Last", "von Last, First", "von Last, Jr, First". */
 export function parseName(raw: string): PersonName {
   const name = raw.trim().replace(/\s+/g, " ");
-  const parts = splitTopLevel(name, /,/).map((s) => s.trim());
+  const parts = splitCommas(name);
 
   if (parts.length >= 2) {
     const head = splitTopLevel(parts[0]);
@@ -63,6 +80,18 @@ export function formatName(n: PersonName): string {
 /** Normalize an author/editor list to "Last, First and Last, First"; keeps "others" and {Corporate Names}. */
 export function normalizeNameList(value: string): string {
   return splitNames(value)
-    .map((n) => (n.toLowerCase() === "others" ? "others" : formatName(parseName(n))))
+    .map((n) => {
+      // "et al." typed as a name is BibTeX's "others" (styles then print "et al." themselves).
+      if (n.toLowerCase() === "others" || /^et\.?\s*al\.?$/i.test(n)) return "others";
+      const p = parseName(n);
+      // Malformed names (", Lucas", "Smith, Jr.,") cannot be rewritten without guessing: keep them as typed.
+      if (!p.last || (p.jr && !p.first)) return n;
+      // "The pandas development team, " (DataCite): a several-word last name with no first name. Without
+      // the comma BibTeX would read "team" as the last name, so keep the words together in braces.
+      if (!p.first && !p.jr && splitCommas(n.trim()).length > 1 && splitTopLevel(p.last).length > 1) {
+        return [p.von, `{${p.last}}`].filter(Boolean).join(" ");
+      }
+      return formatName(p);
+    })
     .join(" and ");
 }

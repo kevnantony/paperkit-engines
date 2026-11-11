@@ -231,3 +231,86 @@ describe("mergeDuplicates keeps entries the parser could not read", () => {
     expect(mergeDuplicates(r, {}).output).toBe(text);
   });
 });
+
+describe("no false duplicates on real-library patterns", () => {
+  const bib = (...entries: string[]) => [{ name: "x.bib", text: entries.join("\n\n") }];
+  const grouped = (r: ReturnType<typeof findDuplicates>) => r.groups.filter((g) => g.kind === "duplicates").map((g) => g.members.map((m) => m.entry.key));
+
+  it("keeps \\TeX and \\METAFONT books apart (Beebe texbook1.bib)", () => {
+    const r = findDuplicates(
+      bib("@book{a, author={Donald E. Knuth}, title={{\\TeX}: The Program}, year=1986}", "@book{b, author={Donald E. Knuth}, title={{\\METAFONT}: The Program}, year=1986}"),
+    );
+    expect(grouped(r)).toEqual([]);
+  });
+
+  it("does not treat the same words in another order as the same title (xampl.bib)", () => {
+    const r = findDuplicates(
+      bib("@book{whole-set, title={The Art of Computer Programming}, year=1988}", "@booklet{booklet, title={The Programming of Computer Art}, year=1988}"),
+    );
+    expect(grouped(r)).toEqual([]);
+  });
+
+  it("does not merge a shared DOI on unrelated letters by different authors (Beebe cacm1950.bib)", () => {
+    const r = findDuplicates(
+      bib(
+        "@article{Perlis, author={Alan J. Perlis}, title={Letters to the editor}, journal={CACM}, year=1959, doi={10.1145/368325.1064211}}",
+        "@article{Bright, author={H. S. Bright}, title={Card Code for {IAL}}, journal={CACM}, year=1959, doi={10.1145/368325.1064211}}",
+      ),
+    );
+    expect(grouped(r)).toEqual([]);
+    // Same DOI with a related title is still a duplicate.
+    const ok = findDuplicates(
+      bib(
+        "@article{a, author={H. S. Bright}, title={Standards: Proposed standard flow chart symbols}, year=1959, doi={10.1145/368453.368641}}",
+        "@article{b, author={W. Barkley Fritz}, title={Proposed Standard Flow Chart Symbols}, year=1959, doi={10.1145/368453.368641}}",
+      ),
+    );
+    expect(grouped(ok)).toEqual([["a", "b"]]);
+  });
+
+  it("does not group equal titles by different authors, even with shared proceedings editors (ACL Anthology)", () => {
+    const r = findDuplicates(
+      bib(
+        "@inproceedings{kay, title={Concluding Remarks}, author={Kay, Martin}, editor={Nagao, Makoto}, booktitle={TINLAP}, year=1987}",
+        "@inproceedings{rolling, title={Concluding Remarks}, author={Rolling, Loll}, editor={Nagao, Makoto}, booktitle={TINLAP}, year=1987}",
+      ),
+    );
+    expect(grouped(r)).toEqual([]);
+  });
+
+  it("keeps anonymous front matter from different issues apart (ACL Anthology)", () => {
+    const r = findDuplicates(
+      bib(
+        '@article{ad3, title="Advertisements", journal="Computational Linguistics", volume="14", number="3", year="1988", url="https://aclanthology.org/J88-3021/"}',
+        '@article{ad4, title="Advertisements", journal="Computational Linguistics", volume="14", number="4", year="1988", url="https://aclanthology.org/J88-4016/"}',
+        '@article{br1, title="Book Reviews", journal="Computational Linguistics", volume="13", year="1987", url="https://aclanthology.org/J87-1008/"}',
+        '@article{br3, title="Book Reviews", journal="Computational Linguistics", volume="13", year="1987", url="https://aclanthology.org/J87-3010/"}',
+        '@book{dec, title="{A}merican Journal of Computational Linguistics ({D}ecember 1977)", year="1977"}',
+        '@book{sep, title="{A}merican Journal of Computational Linguistics ({S}eptember 1977)", year="1977"}',
+      ),
+    );
+    expect(grouped(r)).toEqual([]);
+  });
+
+  it("still pairs an arXiv preprint with its published version", () => {
+    const r = findDuplicates(
+      bib(
+        "@article{he2015, author={He, Kaiming and Zhang, Xiangyu}, title={Deep residual learning for image recognition}, journal={arXiv preprint arXiv:1512.03385}, year={2015}}",
+        "@inproceedings{he2016, author={Kaiming He and Xiangyu Zhang}, title={Deep Residual Learning for Image Recognition}, booktitle={CVPR}, pages={770--778}, year={2016}}",
+      ),
+    );
+    expect(r.groups.map((g) => g.reasons)).toEqual([["arxiv-published"]]);
+  });
+
+  it("suggests the complete record over a title-and-URL stub (awesome-o1.bib)", () => {
+    const r = findDuplicates(
+      bib(
+        '@MISC{stub, title="Generative Verifiers: Reward Modeling as Next-Token Prediction", howpublished="\\url{https://arxiv.org/html/2408.15240v1}"}',
+        '@ARTICLE{Zhang2024, title="Generative verifiers: Reward modeling as next-token prediction", author="Zhang, Lunjun and Hosseini, Arian", journal="arXiv [cs.LG]", year=2024}',
+      ),
+    );
+    expect(r.groups).toHaveLength(1);
+    expect(r.candidates[r.groups[0].suggested].entry.key).toBe("Zhang2024");
+    expect(r.groups[0].reasons).toEqual(["same-title"]); // both are preprints
+  });
+});

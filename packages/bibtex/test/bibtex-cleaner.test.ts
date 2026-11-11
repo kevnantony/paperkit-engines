@@ -221,3 +221,51 @@ describe("unparseable entries", () => {
     expect(r.output).not.toContain("Old");
   });
 });
+
+describe("real-library regressions", () => {
+  it("does not mangle an empty name or a doubled 'and' (continual_learning_papers bibtex.bib)", () => {
+    const src = "@misc{a, author={Aljundi, Rahaf and\n, Lucas and Belilovsky, Eugene}}\n\n@misc{b, author={Yuhai Tu and and Gerald Tesauro}}\n";
+    const once = cleanBibtex(src, opts()).output;
+    expect(once).toContain("author = {Aljundi, Rahaf and , Lucas and Belilovsky, Eugene}");
+    expect(once).toContain("author = {Tu, Yuhai and Tesauro, Gerald}");
+    expect(cleanBibtex(once, opts()).output).toBe(once);
+  });
+
+  it("is idempotent with regenerated keys and sorting when more than 26 entries share a key", () => {
+    const src = Array.from({ length: 30 }, (_, i) => `@proceedings{p${i}, title={International Conference on Computational Linguistics}, year=1969, note={No. ${i}}}`).join("\n");
+    const o = opts({ regenerateKeys: true, sort: "key" });
+    const once = cleanBibtex(src, o);
+    const keys = once.entries.map((e) => e.key);
+    expect(new Set(keys).size).toBe(30);
+    expect(keys.slice(0, 3)).toEqual(["anon1969internationalaa", "anon1969internationalab", "anon1969internationalac"]);
+    expect(cleanBibtex(once.output, o).output).toBe(once.output);
+  });
+
+  it("protects each side of a slash on its own", () => {
+    expect(protectCapitals("A hybrid DSP/deep learning approach")).toBe("A hybrid {DSP}/deep learning approach");
+    expect(protectCapitals("CNN/LSTM models")).toBe("{CNN}/{LSTM} models");
+    // Crossref title of 10.1007/978-3-319-24574-4_28.
+    expect(protectCapitals("U-Net: Convolutional Networks")).toBe("{U-Net}: Convolutional Networks");
+    expect(protectCapitals("A Study of Pre-Training")).toBe("A Study of Pre-Training");
+  });
+
+  it("never braces inside math and keeps parentheses balanced", () => {
+    expect(protectCapitals("Bounds for $a + BC + d$ and SO(3) in $O(N)$ time")).toBe("Bounds for $a + BC + d$ and {SO(3)} in $O(N)$ time");
+    expect(protectCapitals("Groups SO(3), SE(3) and the \\$5 GPU")).toBe("Groups {SO(3)}, {SE(3)} and the \\$5 {GPU}");
+  });
+
+  it("turns a typed 'et al.' into BibTeX's others", () => {
+    const r = cleanBibtex("@misc{k, author = {Smith, J. and et al.}}", opts());
+    expect(r.output).toContain("author = {Smith, J. and others}");
+  });
+
+  it("keeps non-breaking spaces while collapsing ordinary whitespace", () => {
+    const r = cleanBibtex("@misc{k, note = {Proc. IEEE,\n     vol. 3 }}", opts());
+    expect(r.output).toContain("note = {Proc. IEEE, vol. 3}");
+  });
+
+  it("does not use math as the key word", () => {
+    const [e] = entriesOf(parseBibtex("@article{x, author={Lloyd, Stuart}, title={$k$-means clustering}, year=1982}"));
+    expect(makeKey(e)).toBe("lloyd1982means");
+  });
+});

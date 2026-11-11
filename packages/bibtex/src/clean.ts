@@ -155,7 +155,7 @@ export function cleanItems(items: BibItem[], opts: CleanOptions, warnings: Parse
       if ((total.get(base) ?? 0) > 1) {
         const n = seen.get(base) ?? 0;
         seen.set(base, n + 1);
-        key = base + suffix(n);
+        key = base + suffix(n, total.get(base)!);
       }
       if (key !== e.key) {
         keyChanges.push({ from: e.key, to: key });
@@ -225,14 +225,20 @@ function retargetKeyReferences(entries: BibEntry[], changes: { from: string; to:
   }
 }
 
-function suffix(n: number): string {
-  // a, b, …, z, aa, ab …
+/**
+ * Collision suffix: a, b, …, z when at most 26 entries share a base key; otherwise every suffix has the
+ * same width (aa, ab, …), so that sorting the keys keeps them in the order they were assigned and a
+ * second clean with sorting produces the same keys.
+ */
+function suffix(n: number, total: number): string {
+  let width = 1;
+  for (let cap = 26; cap < total; cap *= 26) width++;
   let s = "";
   let x = n;
-  do {
+  for (let i = 0; i < width; i++) {
     s = String.fromCharCode(97 + (x % 26)) + s;
-    x = Math.floor(x / 26) - 1;
-  } while (x >= 0);
+    x = Math.floor(x / 26);
+  }
   return s;
 }
 
@@ -264,8 +270,9 @@ function cleanEntry(input: BibEntry, opts: CleanOptions): { entry: BibEntry; rem
     const lit = singleLiteral(f.value);
     if (opts.trimWhitespace) {
       // Inside a concatenation, edge spaces are meaningful (nips # " 27"), so only collapse runs.
-      for (const p of f.value) if (p.type === "literal") p.value = p.value.replace(/\s+/g, " ");
-      if (lit) lit.value = lit.value.trim();
+      // Only ASCII whitespace: a non-breaking space (U+00A0, typeset as ~) is content, not layout.
+      for (const p of f.value) if (p.type === "literal") p.value = p.value.replace(/[ \t\n\r\f\v]+/g, " ");
+      if (lit) lit.value = lit.value.replace(/^[ \t\n\r\f\v]+|[ \t\n\r\f\v]+$/g, "");
     }
     if (!lit) {
       if (f.name === "month" && opts.monthMacros && f.value.length === 1 && f.value[0].type === "macro") {
@@ -323,13 +330,23 @@ export function protectCapitals(title: string): string {
   let out = "";
   let depth = 0;
   let token = "";
+  // Inside $…$ math nothing is touched, even across spaces ("$a + BC$").
+  let inMath = false;
+  let mathInToken = false;
+  let prev = "";
   const flush = () => {
-    if (token) out += protectToken(token);
+    if (token) out += inMath || mathInToken ? token : protectToken(token);
     token = "";
+    mathInToken = false;
   };
   for (const ch of title) {
     if (ch === "{") depth++;
     if (ch === "}") depth = Math.max(0, depth - 1);
+    if (ch === "$" && prev !== "\\") {
+      inMath = !inMath;
+      mathInToken = true;
+    }
+    prev = ch;
     if (depth === 0 && /\s/.test(ch)) {
       flush();
       out += ch;
@@ -354,17 +371,27 @@ function isFullyBraced(s: string): boolean {
 
 function protectToken(tok: string): string {
   if (/[{}\\$]/.test(tok)) return tok;
+  // "DSP/deep", "CNN/LSTM": protect each side on its own, so the lower-case side is not frozen.
+  if (tok.includes("/")) return tok.split("/").map(protectToken).join("/");
   const chars = Array.from(tok);
   let a = 0;
   let b = chars.length;
   while (a < b && !isWordChar(chars[a])) a++;
   while (b > a && !isWordChar(chars[b - 1])) b--;
   if (a === b) return tok;
+  // Keep a closing parenthesis with its opening one: "SO(3)," → "{SO(3)}," not "{SO(3}),".
+  const count = (c: string) => chars.slice(a, b).filter((x) => x === c).length;
+  while (b < chars.length && chars[b] === ")" && count("(") > count(")")) b++;
   const pre = chars.slice(0, a).join("");
   const core = chars.slice(a, b).join("");
   const post = chars.slice(b).join("");
   // A capital anywhere after the first character of a word (BERT, ImageNet, iPhone, 3D, COVID-19).
-  const needs = core.split(/[-/]/).some((seg) => Array.from(seg).slice(1).some(isUpper));
+  // Also a single capital letter joined to a capitalized word (U-Net, X-Ray, T-SNE): "Pre-Training" is
+  // left alone, but a style that lower-cases titles would print "U-net".
+  const segs = core.split("-");
+  const needs =
+    segs.some((seg) => Array.from(seg).slice(1).some(isUpper)) ||
+    segs.some((seg, i) => i < segs.length - 1 && seg.length === 1 && isUpper(seg) && isUpper(Array.from(segs[i + 1])[0] ?? ""));
   return needs ? `${pre}{${core}}${post}` : tok;
 }
 
@@ -386,8 +413,10 @@ export function makeKey(entry: BibEntry, strings: Record<string, string> = {}): 
     last = plainText(n.last).replace(/\s+/g, "");
   }
   const year = yearOf(entry, strings);
-  const words = plainText(getField(entry, "title", strings) ?? "").split(" ").filter(Boolean);
-  const word = words.find((w) => !STOPWORDS.has(w) && /[a-z]/.test(w)) ?? words[0] ?? "";
+  // Math ("$k$-means") does not make a good key word.
+  const title = (getField(entry, "title", strings) ?? "").replace(/\$[^$]*\$/g, " ");
+  const words = plainText(title).split(" ").filter(Boolean);
+  const word = words.find((w) => !STOPWORDS.has(w) && /[a-z]/.test(w)) ?? words.find((w) => /[a-z0-9]/.test(w)) ?? "";
   const key = `${last || "anon"}${year}${word}`;
   return key.replace(/[^a-z0-9]/g, "") || "entry";
 }
