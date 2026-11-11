@@ -3,16 +3,21 @@
   "private": true,
   "description": "Open-source processing engines behind PaperKit: BibTeX, LaTeX, arXiv, double-blind anonymity, PDF checks and figure helpers.",
   "license": "MIT",
-  "repository": { "type": "git", "url": "git+https://github.com/kevnantony/paperkit-engines.git" },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kevnantony/paperkit-engines.git"
+  },
   "workspaces": [
     "packages/bibtex",
-    "packages/latex",
     "packages/arxiv",
+    "packages/latex",
     "packages/anon",
     "packages/pdf-check",
     "packages/image"
   ],
-  "engines": { "node": ">=18" },
+  "engines": {
+    "node": ">=18"
+  },
   "scripts": {
     "build": "npm run build --workspaces",
     "test": "vitest run",
